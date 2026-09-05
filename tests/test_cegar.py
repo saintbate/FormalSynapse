@@ -92,8 +92,9 @@ def test_healed_trajectory_logs_row(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert gen.seen[0][0].content == SYSTEM_PROMPT
     assert "increment" in gen.seen[0][1].content
     assert "Failed assertion" in gen.seen[1][3].content
-    assert "FAILED LABELS" in gen.seen[1][3].content
     assert "a_t_bad" in gen.seen[1][3].content
+    # single-property fail strips everything, so we fall back to a full rewrite prompt
+    assert "FAILED LABELS" in gen.seen[1][3].content or "FAILED LABELS to replace" in gen.seen[1][3].content
 
 
 def test_first_pass_has_no_dataset_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,6 +115,106 @@ def test_first_pass_has_no_dataset_row(tmp_path: Path, monkeypatch: pytest.Monke
     )
     assert traj.first_pass
     assert traj.dataset_rows() == []
+
+
+def test_best_of_n_picks_passing_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+
+    statuses = ["FAIL", "PASS"]
+
+    def fake_verify(*_a: object, **_k: object) -> VerifyResult:
+        return _result(statuses.pop(0))
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text(
+        "module t (input logic clk, input logic rst_n, input logic en, "
+        "output logic [3:0] count);\nendmodule\n"
+    )
+    spec.write_text("1. increment\n")
+    gen = Scripted([BAD, GOOD])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=0,
+        candidates=2,
+    )
+    assert traj.first_pass
+    assert traj.turns == 1
+    assert len(gen.seen) == 2
+
+
+def test_slot_repair_keeps_survivors_out_of_the_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+
+    mixed = """\
+`ifdef FORMAL
+property p_keep;
+    @(posedge clk) disable iff (!rst_n)
+    en |=> count == $past(count) + 1;
+endproperty
+a_keep: assert property (p_keep);
+property p_bad;
+    @(posedge clk) disable iff (!rst_n)
+    rst_n |-> count == 0;
+endproperty
+a_bad: assert property (p_bad);
+`endif
+"""
+
+    def fake_verify_pos(*_a: object, **_k: object) -> VerifyResult:
+        sva = str(_a[1]) if len(_a) > 1 else ""
+        if "a_t_bad" in sva or ("a_bad" in sva and "GOOD_SLOT" not in sva):
+            return VerifyResult(
+                status="FAIL",
+                exit_code=2,
+                run_dir=tmp_path,
+                sby_log_path=None,
+                trace_vcd_path=None,
+                failing_step=2,
+                failed_assertions=("a_bad",),
+                errors=(),
+                report="Failed a_bad",
+                depth=8,
+                mode="bmc",
+                elapsed_s=0.1,
+            )
+        return _result("PASS")
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify_pos)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    slot = """\
+`ifdef FORMAL
+property p_fixed;
+    @(posedge clk) disable iff (!rst_n)
+    en |=> count == $past(count) + 1;
+endproperty
+a_fixed: assert property (p_fixed);
+GOOD_SLOT
+`endif
+"""
+    gen = Scripted([mixed, slot])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=1,
+        candidates=1,
+    )
+    assert traj.healed
+    repair = gen.seen[1][3].content
+    assert "do not copy" in repair.lower() or "do not repeat" in repair.lower()
+    assert "a_keep" in repair
+    assert "FAILED LABELS to replace" in repair
 
 
 def test_suite_metrics() -> None:

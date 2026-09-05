@@ -35,13 +35,15 @@ a_<module>_<name>: assert property (p_<module>_<name>)
 """
 
 
-def zero_shot_user(*, module: str, spec: str, rtl: str) -> str:
+def zero_shot_user(*, module: str, spec: str, rtl: str, context: str = "") -> str:
     """User message for the first (zero-shot) attempt."""
     clean = strip_formal_blocks(rtl).rstrip() + "\n"
+    ctx = f"## Design context (only these names exist)\n{context.strip()}\n\n" if context.strip() else ""
     return (
         f"Write SystemVerilog Assertions for module `{module}` that capture every numbered "
         f"requirement in the specification. Cover the interesting antecedents.\n\n"
         f"## Specification\n{spec.strip()}\n\n"
+        f"{ctx}"
         f"## DUT (RTL only; do not copy it back)\n```systemverilog\n{clean}```\n"
     )
 
@@ -73,4 +75,28 @@ def refinement_user(
         f"If a next-cycle (|=>) equality failed, the consequent needs $past on the old value.\n"
         f"If a reset-named assert failed, you used rst_n or !rst_n as the antecedent — delete it.\n"
         f"Do not use empty bit-selects, generate/genvar, or coverproperty (it is cover property).\n"
+    )
+
+
+def slot_repair_user(
+    *,
+    kept_sva: str,
+    previous_sva: str,
+    status: str,
+    report: str,
+    failed_assertions: tuple[str, ...],
+) -> str:
+    """Ask only for replacements of the failed labels; survivors stay in Python."""
+    labels = ", ".join(failed_assertions) if failed_assertions else "(see diagnostic)"
+    kept = kept_sva.strip() or "(none — emit a full replacement block)"
+    return (
+        f"The harness already deleted the failed labels. Do not repeat the kept properties.\n"
+        f"FAILED LABELS to replace with *different* properties: {labels}\n"
+        f"Harness status: {status}\n\n"
+        f"## Kept (already compiled; do not copy these back)\n```systemverilog\n{kept}\n```\n\n"
+        f"## Failed attempt (do not copy)\n```systemverilog\n{previous_sva.strip()}\n```\n\n"
+        f"## Solver / lowering diagnostic\n{report.strip()}\n\n"
+        f"Emit ONLY the replacement property + assert (and cover) blocks for the failed "
+        f"labels. New antecedents and consequents. If a |=> equality failed, use $past. "
+        f"Never use rst_n / !rst_n as an antecedent. cover property, not coverproperty.\n"
     )

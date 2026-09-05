@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from urllib.error import URLError
 
+import pytest
+
 from formalsynapse.generator import GenerateError, Message, VLLMGenerator, _content_from_chat, ping
 
 
@@ -17,12 +19,13 @@ def test_ping_down() -> None:
     assert detail
 
 
-def test_default_model_is_qwen() -> None:
+def test_default_model_is_codev_sva(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FSYN_LLM_MODEL", raising=False)
+    monkeypatch.delenv("FSYN_LLM_BASE_URL", raising=False)
     gen = VLLMGenerator()
-    assert "Qwen2.5-Coder" in gen.model
+    assert "CodeV-SVA-14B" in gen.model
     assert "8000" in gen.base_url
-    assert gen.guided is True
-    # payload construction is covered by generate(); here we only check the guided flag wiring
+    assert gen.guided is False
     assert isinstance(Message("user", "hi").content, str)
 
 

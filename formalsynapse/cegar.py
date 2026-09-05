@@ -7,12 +7,15 @@ grades itself — :func:`formalsynapse.verify_harness.verify` is the only refere
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from formalsynapse.generator import GenerateError, Generator, Message, generate_sva
-from formalsynapse.prompts import SYSTEM_PROMPT, refinement_user, zero_shot_user
+from formalsynapse.design_context import extract_context
+from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
+from formalsynapse.prompts import SYSTEM_PROMPT, refinement_user, slot_repair_user, zero_shot_user
+from formalsynapse.sva_edit import merge_sva, strip_labels, unwrap_formal
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.verify_harness import VerifyResult, verify
 
@@ -128,7 +131,7 @@ class SuiteReport:
             f"blocks: {n}",
             "syntactic compilation (first attempt not ERROR): "
             f"{self.syntactic_rate:.0%}  ({self._syntax_ok()}/{n})",
-            f"first-pass formal: {self.first_pass_rate:.0%}  (target 15–25%)",
+            f"first-pass formal: {self.first_pass_rate:.0%}  (target 40%)",
             f"CEGAR multi-turn pass: {self.cegar_rate:.0%}  (target 50–60%)",
             f"heal rate among first-pass failures: {self.heal_rate:.0%}",
             "",
@@ -144,6 +147,29 @@ def _count(items: Sequence[Trajectory], pred: Callable[[Trajectory], bool]) -> i
     return sum(1 for t in items if pred(t))
 
 
+def _rank(result: VerifyResult) -> tuple[int, int, int]:
+    """Lower is better. PASS wins; among FAILs, fewer failed labels win."""
+    if result.ok:
+        return (0, 0, 0)
+    if result.status == "ERROR":
+        return (3, 99, 0)
+    n_fail = len(result.failed_assertions)
+    step = result.failing_step if result.failing_step is not None else 99
+    return (1, n_fail, step)
+
+
+@contextmanager
+def _with_temperature(generator: Generator, value: float | None) -> Iterator[None]:
+    old = getattr(generator, "temperature", None)
+    if value is not None and isinstance(old, float):
+        generator.temperature = value  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        if value is not None and isinstance(old, float):
+            generator.temperature = old  # type: ignore[attr-defined]
+
+
 def run_block(
     *,
     dut_path: Path,
@@ -154,22 +180,29 @@ def run_block(
     depth: int = 20,
     timeout_s: float = 300.0,
     max_feedback: int = MAX_FEEDBACK,
+    candidates: int = 1,
     on_attempt: Callable[[Attempt], None] | None = None,
 ) -> Trajectory:
-    """Zero-shot + up to ``max_feedback`` CEGAR repairs on one DUT."""
+    """Zero-shot + up to ``max_feedback`` repairs. ``candidates`` is sby-graded best-of-N."""
     started = time.monotonic()
     rtl = dut_path.read_text()
     spec = spec_path.read_text() if spec_path.is_file() else ""
-    user0 = zero_shot_user(module=top, spec=spec, rtl=strip_formal_blocks(rtl))
+    clean_rtl = strip_formal_blocks(rtl)
+    context = extract_context(clean_rtl, top).render()
+    user0 = zero_shot_user(module=top, spec=spec, rtl=clean_rtl, context=context)
     messages: list[Message] = [
         Message("system", SYSTEM_PROMPT),
         Message("user", user0),
     ]
     attempts: list[Attempt] = []
+    kept = ""
     max_turns = 1 + max(0, max_feedback)
+    n_cand = max(1, candidates)
     for turn in range(1, max_turns + 1):
+        sample_temp = 0.5 if n_cand > 1 else None
         try:
-            sva = generate_sva(generator, messages)
+            with _with_temperature(generator, sample_temp):
+                raw_blocks = generate_sva_n(generator, messages, n_cand)
         except GenerateError as exc:
             result = VerifyResult(
                 status="ERROR",
@@ -190,42 +223,50 @@ def run_block(
             if on_attempt is not None:
                 on_attempt(att)
             break
-        result = verify(
-            dut_path,
-            sva,
-            top,
-            depth=depth,
-            timeout_s=timeout_s,
-            workdir=workdir,
-            run_name=f"cegar-{top}-{turn}",
-        )
-        att = Attempt(turn, sva, result)
-        attempts.append(att)
-        if on_attempt is not None:
-            on_attempt(att)
-        if result.ok:
-            break
-        if turn == max_turns:
-            break
-        repeated = bool(len(attempts) >= 2) and set(result.failed_assertions) == set(
-            attempts[-2].result.failed_assertions
-        )
-        temp = getattr(generator, "temperature", None)
-        if isinstance(temp, float):
-            generator.temperature = min(0.6, 0.2 + 0.15 * turn)  # type: ignore[attr-defined]
-        messages.append(Message("assistant", sva))
-        messages.append(
-            Message(
-                "user",
-                refinement_user(
-                    previous_sva=sva,
-                    status=result.status,
-                    report=result.report,
-                    failed_assertions=result.failed_assertions,
-                    repeated=repeated,
-                ),
+        best: Attempt | None = None
+        for i, raw in enumerate(raw_blocks, start=1):
+            sva = merge_sva(kept, raw) if unwrap_formal(kept) else raw
+            result = verify(
+                dut_path,
+                sva,
+                top,
+                depth=depth,
+                timeout_s=timeout_s,
+                workdir=workdir,
+                run_name=f"cegar-{top}-{turn}-{i}",
             )
-        )
+            att = Attempt(turn, sva, result)
+            if best is None or _rank(result) < _rank(best.result):
+                best = att
+            if result.ok:
+                break
+        assert best is not None
+        attempts.append(best)
+        if on_attempt is not None:
+            on_attempt(best)
+        if best.result.ok or turn == max_turns:
+            break
+        failed = best.result.failed_assertions
+        kept = strip_labels(best.sva, failed) if failed else ""
+        repeated = len(attempts) >= 2 and set(failed) == set(attempts[-2].result.failed_assertions)
+        messages.append(Message("assistant", best.sva))
+        if failed and unwrap_formal(kept):
+            repair = slot_repair_user(
+                kept_sva=kept,
+                previous_sva=best.sva,
+                status=best.result.status,
+                report=best.result.report,
+                failed_assertions=failed,
+            )
+        else:
+            repair = refinement_user(
+                previous_sva=best.sva,
+                status=best.result.status,
+                report=best.result.report,
+                failed_assertions=failed,
+                repeated=repeated,
+            )
+        messages.append(Message("user", repair))
     return Trajectory(
         block=dut_path.parent.name,
         top=top,
@@ -243,6 +284,7 @@ def run_suite(
     depth: int = 20,
     timeout_s: float = 300.0,
     max_feedback: int = MAX_FEEDBACK,
+    candidates: int = 1,
     on_attempt: Callable[[str, Attempt], None] | None = None,
 ) -> SuiteReport:
     """Run :func:`run_block` over every golden directory in ``blocks``."""
@@ -268,6 +310,7 @@ def run_suite(
                 depth=depth,
                 timeout_s=timeout_s,
                 max_feedback=max_feedback,
+                candidates=candidates,
                 on_attempt=_hook,
             )
         )

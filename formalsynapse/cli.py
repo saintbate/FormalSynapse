@@ -214,8 +214,8 @@ def _llm_from_args(args: argparse.Namespace) -> VLLMGenerator:
         model=args.llm_model,
         api_key=args.llm_key,
         max_tokens=args.max_tokens,
-        guided=not args.no_grammar,
-        guided_backend="off" if args.no_grammar else "grammar",
+        guided=bool(getattr(args, "grammar", False)),
+        guided_backend="grammar" if getattr(args, "grammar", False) else "off",
     )
 
 
@@ -224,7 +224,22 @@ def _add_llm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--llm-url", default=gen.base_url, help="OpenAI-compatible base URL (vLLM default)")
     p.add_argument("--llm-model", default=gen.model)
     p.add_argument("--llm-key", default=gen.api_key)
-    p.add_argument("--no-grammar", action="store_true", help="disable guided_grammar (if the server rejects it)")
+    p.add_argument(
+        "--grammar",
+        action="store_true",
+        help="request guided_grammar (off by default; the lowerer is the syntax gate)",
+    )
+    p.add_argument(
+        "--no-grammar",
+        action="store_true",
+        help="ignored; grammar is off unless --grammar (kept for old scripts)",
+    )
+    p.add_argument(
+        "--candidates",
+        type=int,
+        default=8,
+        help="sby-graded best-of-N samples per turn (default 8)",
+    )
     p.add_argument(
         "--max-tokens",
         type=int,
@@ -259,6 +274,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         depth=args.depth,
         timeout_s=args.timeout,
         max_feedback=args.max_feedback,
+        candidates=args.candidates,
         on_attempt=lambda att: _print_suite_attempt(top, att),
     )
     _print(f"{traj.block}: {traj.status} in {traj.turns} turn(s), {traj.elapsed_s:.1f}s")
@@ -297,6 +313,7 @@ def _run_suite_cmd(args: argparse.Namespace, *, max_feedback: int, label: str) -
         depth=args.depth,
         timeout_s=args.timeout,
         max_feedback=max_feedback,
+        candidates=args.candidates,
         on_attempt=_print_suite_attempt,
     )
     _print("")

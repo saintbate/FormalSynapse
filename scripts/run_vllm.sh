@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the Phase 3 generator: vLLM serving Qwen2.5-Coder-7B-Instruct with guided decoding.
+# Launch the generator: vLLM serving CodeV-SVA-14B (grammar off at the client).
 #
 #   scripts/run_vllm.sh
 #   MODEL=Qwen/Qwen2.5-Coder-14B-Instruct scripts/run_vllm.sh
@@ -8,7 +8,7 @@
 # harness is local; point FSYN_LLM_BASE_URL at a remote vLLM if you do not have a GPU here.
 set -euo pipefail
 
-MODEL="${MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}"
+MODEL="${MODEL:-wyt2000/CodeV-SVA-14B}"
 PORT="${PORT:-8000}"
 HOST="${HOST:-0.0.0.0}"
 
@@ -18,9 +18,9 @@ if ! command -v vllm >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> vLLM ${MODEL}  http://${HOST}:${PORT}/v1  (guided decoding via outlines/xgrammar)"
+echo "==> vLLM ${MODEL}  http://${HOST}:${PORT}/v1"
 exec vllm serve "$MODEL" \
   --host "$HOST" \
   --port "$PORT" \
-  --guided-decoding-backend xgrammar \
-  --trust-remote-code
+  --trust-remote-code \
+  --max-model-len "${MAX_MODEL_LEN:-8192}"

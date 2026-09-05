@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Run THIS on the rented CUDA box (not on the Mac). Serves Qwen2.5-Coder-7B-Instruct
-# with vLLM + xgrammar on :8000, then keep the Mac pointed at it:
+# Run THIS on the rented CUDA box (not on the Mac). Serves CodeV-SVA-14B on :8000.
+# Grammar is off at the FormalSynapse client. Then on the Mac:
 #
 #   ssh -L 8000:127.0.0.1:8000 root@<pod-ip> -p <pod-ssh-port>
-#   # on the Mac, with scripts/env.sh already sourced:
 #   export FSYN_LLM_BASE_URL=http://127.0.0.1:8000/v1
-#   export FSYN_LLM_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct
+#   export FSYN_LLM_MODEL=wyt2000/CodeV-SVA-14B
 #   export FSYN_LLM_API_KEY=EMPTY
 #   fsyn doctor && fsyn baseline && fsyn cegar
 #
-# Needs ~16 GB VRAM. A single RTX 4090 / A5000 / L4 24GB is enough.
+# Needs ~24 GB VRAM (4090 in 8-bit, or 48 GB in bf16).
 set -euo pipefail
 
-MODEL="${MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}"
+MODEL="${MODEL:-wyt2000/CodeV-SVA-14B}"
 PORT="${PORT:-8000}"
 HOST="${HOST:-0.0.0.0}"
 

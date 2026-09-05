@@ -16,7 +16,7 @@ Verilog DUTs, Python wrappers, `.sby` files, harness edits.
 ## Local zero-cost fallback
 When `http://localhost:8000/v1` is up (see `scripts/run_vllm.sh`):
 
-- Model: `Qwen/Qwen2.5-Coder-7B-Instruct`
+- Model: `wyt2000/CodeV-SVA-14B`
 - Base URL: `http://localhost:8000/v1`
 - API key: any non-empty string (vLLM ignores it)
 

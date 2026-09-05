@@ -1,0 +1,186 @@
+"""Deterministic edits on authored (concurrent) SVA blocks.
+
+CEGAR repair strips failed labels in Python instead of asking the model to delete them.
+"""
+
+from __future__ import annotations
+
+import re
+
+_IFDEF = re.compile(r"^\s*`ifdef\s+FORMAL\b", re.I | re.M)
+_ENDIF = re.compile(r"^\s*`endif\b", re.I | re.M)
+_PROP = re.compile(r"\bproperty\s+(?P<name>[A-Za-z_]\w*)\b", re.I)
+_ENDPROP = re.compile(r"\bendproperty\b", re.I)
+_LABELED = re.compile(
+    r"(?P<label>[A-Za-z_]\w*)\s*:\s*(?P<kind>assert|assume|cover)\s+property\b",
+    re.I,
+)
+_PROP_REF = re.compile(
+    r"\b(?:assert|assume|cover)\s+property\s*\(\s*([A-Za-z_]\w*)\s*\)",
+    re.I,
+)
+
+
+def unwrap_formal(block: str) -> str:
+    """Return the inside of ```ifdef FORMAL ... `endif`` if present."""
+    text = block.strip()
+    start = _IFDEF.search(text)
+    if start is None:
+        return text
+    end = None
+    for m in _ENDIF.finditer(text):
+        end = m
+    if end is None or end.start() <= start.end():
+        return text
+    return text[start.end() : end.start()].strip()
+
+
+def wrap_formal(body: str) -> str:
+    """Wrap ``body`` in ```ifdef FORMAL`` unless it already is."""
+    text = body.strip()
+    if not text:
+        return ""
+    if _IFDEF.match(text):
+        return text if text.endswith("\n") else text + "\n"
+    return f"`ifdef FORMAL\n{text}\n`endif\n"
+
+
+def merge_sva(kept: str, addition: str) -> str:
+    """Concatenate two formal blocks (kept survivors + new slots)."""
+    a = unwrap_formal(kept)
+    b = unwrap_formal(addition)
+    if not a:
+        return wrap_formal(b)
+    if not b:
+        return wrap_formal(a)
+    return wrap_formal(a.rstrip() + "\n\n" + b)
+
+
+def strip_labels(sva: str, labels: tuple[str, ...]) -> str:
+    """Drop labeled assert/assume/cover statements and orphaned property decls."""
+    if not labels:
+        return sva if sva.endswith("\n") or not sva else sva + "\n"
+    wanted = {lab.lower() for lab in labels}
+    text = unwrap_formal(sva)
+    if not text:
+        return ""
+    drop_ranges = _labeled_ranges(text, wanted)
+    kept = _cut(text, drop_ranges)
+    refs = {m.group(1).lower() for m in _PROP_REF.finditer(kept)}
+    prop_ranges = _property_ranges(kept)
+    orphan = [(a, b) for name, a, b in prop_ranges if name.lower() not in refs]
+    kept = _cut(kept, orphan).strip()
+    return wrap_formal(kept)
+
+
+def _labeled_ranges(text: str, wanted: set[str]) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for m in _LABELED.finditer(text):
+        if m.group("label").lower() not in wanted:
+            continue
+        end = _statement_end(text, m.end())
+        if end < 0:
+            continue
+        start = _line_start(text, m.start())
+        ranges.append((start, end))
+    return ranges
+
+
+def _property_ranges(text: str) -> list[tuple[str, int, int]]:
+    out: list[tuple[str, int, int]] = []
+    for m in _PROP.finditer(text):
+        end_m = _ENDPROP.search(text, m.end())
+        if end_m is None:
+            continue
+        start = _line_start(text, m.start())
+        end = end_m.end()
+        while end < len(text) and text[end] in " \t":
+            end += 1
+        if end < len(text) and text[end] == ";":
+            end += 1
+        if end < len(text) and text[end] == "\n":
+            end += 1
+        out.append((m.group("name"), start, end))
+    return out
+
+
+def _statement_end(text: str, from_idx: int) -> int:
+    i = _skip_ws(text, from_idx)
+    if i >= len(text) or text[i] != "(":
+        return -1
+    i = _skip_balanced(text, i)
+    if i < 0:
+        return -1
+    i = _skip_ws(text, i)
+    if text.startswith("else", i):
+        i = _skip_ws(text, i + 4)
+        if text.startswith("$error", i):
+            i = _skip_ws(text, i + 6)
+            if i < len(text) and text[i] == "(":
+                i = _skip_balanced(text, i)
+                if i < 0:
+                    return -1
+                i = _skip_ws(text, i)
+    if i < len(text) and text[i] == ";":
+        i += 1
+        if i < len(text) and text[i] == "\n":
+            i += 1
+        return i
+    return -1
+
+
+def _skip_balanced(text: str, start: int) -> int:
+    depth = 0
+    i = start
+    in_str = False
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == "\\" and i + 1 < len(text):
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _skip_ws(text: str, i: int) -> int:
+    while i < len(text) and text[i] in " \t\n\r":
+        i += 1
+    return i
+
+
+def _line_start(text: str, i: int) -> int:
+    while i > 0 and text[i - 1] != "\n":
+        i -= 1
+    return i
+
+
+def _cut(text: str, ranges: list[tuple[int, int]]) -> str:
+    if not ranges:
+        return text
+    ordered = sorted(ranges)
+    merged: list[tuple[int, int]] = []
+    for a, b in ordered:
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    out: list[str] = []
+    cursor = 0
+    for a, b in merged:
+        out.append(text[cursor:a])
+        cursor = b
+    out.append(text[cursor:])
+    return "".join(out)

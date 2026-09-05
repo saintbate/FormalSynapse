@@ -55,13 +55,13 @@ class VLLMGenerator:
     """Chat-completions client with optional ``guided_grammar`` (vLLM + outlines/xgrammar)."""
 
     base_url: str = field(default_factory=lambda: _env("FSYN_LLM_BASE_URL", "http://localhost:8000/v1"))
-    model: str = field(default_factory=lambda: _env("FSYN_LLM_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct"))
+    model: str = field(default_factory=lambda: _env("FSYN_LLM_MODEL", "wyt2000/CodeV-SVA-14B"))
     api_key: str = field(default_factory=lambda: _env("FSYN_LLM_API_KEY", "EMPTY"))
     temperature: float = 0.2
     max_tokens: int = field(default_factory=lambda: _env_int("FSYN_LLM_MAX_TOKENS", 1024))
     timeout_s: float = 180.0
-    guided: bool = True
-    guided_backend: str = "grammar"  # grammar | regex | off
+    guided: bool = False
+    guided_backend: str = "off"  # grammar | regex | off
 
     def generate(self, messages: list[Message]) -> str:
         url = urljoin(self.base_url.rstrip("/") + "/", "chat/completions")
@@ -169,3 +169,18 @@ def generate_sva(generator: Generator, messages: list[Message]) -> str:
         return extract_sva(raw)
     except ExtractError as exc:
         raise GenerateError(f"{exc}; raw starts {raw[:160]!r}") from exc
+
+
+def generate_sva_n(generator: Generator, messages: list[Message], n: int) -> list[str]:
+    """Sample up to ``n`` extractable SVA blocks (best-of-N input)."""
+    count = max(1, n)
+    blocks: list[str] = []
+    last_err: GenerateError | None = None
+    for _ in range(count):
+        try:
+            blocks.append(generate_sva(generator, messages))
+        except GenerateError as exc:
+            last_err = exc
+    if not blocks:
+        raise last_err if last_err is not None else GenerateError("no SVA candidates")
+    return blocks

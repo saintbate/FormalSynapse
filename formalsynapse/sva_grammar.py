@@ -22,7 +22,7 @@ item ::= property_decl | labeled_stmt
 
 property_decl ::= "property" ws ident ws opt_empty_parens ws ";" ws clocked_body ws ";" ws "endproperty"
 
-opt_empty_parens ::= "(" ws ")" |
+opt_empty_parens ::= ("(" ws ")")?
 
 clocked_body ::= clocking ws disable ws prop
 
@@ -34,7 +34,7 @@ prop ::= seq (ws impl ws opt_lead_delay seq)?
 
 impl ::= "|->" | "|=>"
 
-opt_lead_delay ::= "##" delay ws |
+opt_lead_delay ::= ("##" delay ws)?
 
 delay ::= number | "[" number ":" number "]"
 
@@ -46,7 +46,7 @@ kind ::= "assert" | "assume" | "cover"
 
 prop_arg ::= ident | clocked_body
 
-opt_else ::= "else" ws "$error" ws "(" ws string ws ")" |
+opt_else ::= ("else" ws "$error" ws "(" ws string ws ")")?
 
 expr ::= unary (ws binop ws unary)*
 
@@ -96,10 +96,10 @@ def extract_sva(text: str) -> str:
     candidates = list(fences) if fences else []
     candidates.append(stripped)
     for cand in candidates:
-        block = cand.strip()
+        block = str(cand).strip()
         ifdef = _IFDEF.search(block)
         if ifdef is not None:
-            inner = ifdef.group(1).strip()
+            inner = str(ifdef.group(1)).strip()
             if _PROPERTY.search(inner) or _LABELED.search(inner):
                 return "`ifdef FORMAL\n" + inner + "\n`endif\n"
         if _PROPERTY.search(block) or _LABELED.search(block):

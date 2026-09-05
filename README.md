@@ -4,7 +4,10 @@ Neuro-symbolic SystemVerilog Assertion (SVA) synthesis and verification. An open
 assertions; the open-source formal toolchain (Yosys + yosys-slang + SymbiYosys + Z3/Bitwuzla/Boolector)
 is the referee. Full context and roadmap: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
 
-This repository currently contains Phases 1-2 of the roadmap:
+Position: the formal sign-off gate for open silicon (Yosys/`sby` only). See
+[PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) for the revised roadmap.
+
+This repository currently contains the harness, golden suite, CEGAR loop, and Week 1–2 generator changes:
 
 - a 10-block golden benchmark suite with hand-written, formally proven SVAs (`benchmarks/golden/`)
 - the Python verification bridge (`formalsynapse/`): SVA injection, `.sby` generation, `sby` execution,
@@ -70,20 +73,21 @@ work/, output/                gitignored scratch for agents and harness runs
 ## Phase 3: zero-shot baseline and CEGAR
 
 The generator is an OpenAI-compatible client aimed at **local vLLM** serving
-`Qwen/Qwen2.5-Coder-7B-Instruct` with **guided grammar** (vLLM's outlines/xgrammar backend).
-`sby` is still the only grader.
+`wyt2000/CodeV-SVA-14B`. Grammar-constrained decode is **off** by default (`--grammar` to
+enable). Each turn samples `--candidates` (default 8) completions; `sby` picks the winner.
+Failed labels are stripped in Python before the next prompt. `sby` is still the only grader.
 
 ```bash
 # On a CUDA box (or any host that can run vLLM):
-scripts/run_vllm.sh
+MODEL=wyt2000/CodeV-SVA-14B scripts/run_vllm.sh
 
 # From this repo (point at that server if it is not localhost):
 export FSYN_LLM_BASE_URL=http://localhost:8000/v1
-export FSYN_LLM_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct
+export FSYN_LLM_MODEL=wyt2000/CodeV-SVA-14B
 
 fsyn doctor                  # pings the LLM endpoint
-fsyn baseline                # zero-shot pass rate on benchmarks/golden (target 15–25%)
-fsyn cegar                   # + up to 3 solver-feedback turns (target 50–60%)
+fsyn baseline                # zero-shot (target 40% first-pass after the 14B is up)
+fsyn cegar                   # slot repair + best-of-N (target 50–60%)
 fsyn generate benchmarks/golden/counter --max-feedback 3 --out /tmp/counter.sva.sv
 ```
 
