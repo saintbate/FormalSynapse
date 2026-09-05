@@ -167,6 +167,25 @@ a_cut: assert property (p_ok
     assert "a_ok" in result.names
 
 
+def test_rst_n_antecedent_skipped() -> None:
+    text = """
+property p_ok;
+    @(posedge clk) disable iff (!rst_n)
+    up && !down |=> count == $past(count) + 1;
+endproperty
+a_ok: assert property (p_ok);
+property p_reset;
+    @(posedge clk) disable iff (!rst_n)
+    rst_n |-> count == 4'd0;
+endproperty
+a_reset: assert property (p_reset);
+"""
+    result = lower(text)
+    assert "a_ok" in result.names
+    assert "a_reset" not in result.names
+    assert "rst_n" in result.verilog  # skip comment
+
+
 def test_empty_bit_select_skipped() -> None:
     text = """
 property p_ok;

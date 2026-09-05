@@ -92,6 +92,8 @@ def test_healed_trajectory_logs_row(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert gen.seen[0][0].content == SYSTEM_PROMPT
     assert "increment" in gen.seen[0][1].content
     assert "Failed assertion" in gen.seen[1][3].content
+    assert "FAILED LABELS" in gen.seen[1][3].content
+    assert "a_t_bad" in gen.seen[1][3].content
 
 
 def test_first_pass_has_no_dataset_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

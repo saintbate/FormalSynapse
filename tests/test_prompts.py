@@ -17,3 +17,16 @@ def test_refinement_includes_status_and_trace() -> None:
     assert "FAIL" in msg
     assert "step 4" in msg
     assert "property p" in msg
+
+
+def test_refinement_names_failed_labels_and_repeats() -> None:
+    msg = refinement_user(
+        previous_sva="a_counter_reset: assert property (p);",
+        status="FAIL",
+        report="step 1",
+        failed_assertions=("a_counter_reset",),
+        repeated=True,
+    )
+    assert "a_counter_reset" in msg
+    assert "SAME failing labels" in msg
+    assert "$past" in SYSTEM_PROMPT or "rst_n" in SYSTEM_PROMPT

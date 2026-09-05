@@ -370,6 +370,21 @@ def _check_expr(expr: str) -> None:
         raise LowerError(f"empty bit-select [] is not valid: {expr.strip()!r}")
 
 
+def _redundant_reset_antecedent(ante: str, disable: str | None) -> bool:
+    """True when the antecedent is just rst_n / !rst_n under ``disable iff (!rst_n)``."""
+    if disable is None:
+        return False
+    d = re.sub(r"\s+", "", disable)
+    a = re.sub(r"\s+", "", ante)
+    if a.startswith("(") and a.endswith(")") and a.count("(") == 1:
+        a = a[1:-1]
+    if d.startswith("(") and d.endswith(")") and d.count("(") == 1:
+        d = d[1:-1]
+    if d != "!rst_n":
+        return False
+    return a in {"rst_n", "!rst_n"}
+
+
 _CLOCKING = re.compile(r"^\s*@\s*\(\s*posedge\s+([A-Za-z_]\w*)\s*\)\s*", re.S)
 _DISABLE = re.compile(r"^\s*disable\s+iff\s*\(", re.S)
 
@@ -407,6 +422,12 @@ def parse_property_body(body: str) -> Property:
     if len(parts) > 2:
         raise LowerError(f"chained implications are not supported: {rest!r}")
     ante, _ = _parse_seq(parts[0][1], allow_leading_delay=False)
+    if _redundant_reset_antecedent(" && ".join(ante.exprs), disable):
+        raise LowerError(
+            "antecedent is rst_n or !rst_n under disable iff (!rst_n); that is either "
+            "vacuous or an always-on invariant (e.g. rst_n |-> count==0 means count is "
+            "always 0). Delete this property and encode post-reset behavior"
+        )
     if len(parts) == 1:
         return Property(clock, disable, ante, None, None, None)
     raw_op = parts[1][0]

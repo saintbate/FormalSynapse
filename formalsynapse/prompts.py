@@ -17,7 +17,10 @@ Rules:
 - Bounded delays only (##N or ##[m:n]); no ##[0:$], no [*n], no sequence/generate/genvar
 - No eventually / s_eventually / until / throughout / bind / module
 - Only name signals that appear in the DUT ports or declared internals
-- No vacuous antecedents (never (a && !a) |-> ...); do not assert !rst_n under disable iff (!rst_n)
+- No vacuous antecedents (never (a && !a) |-> ...)
+- Never use rst_n or !rst_n as the antecedent. disable iff (!rst_n) already excludes reset.
+  `rst_n |-> count == 0` means "count is always 0" and will FAIL. Encode the numbered
+  post-reset behaviors instead (increment, hold, grant-follows-request, …).
 - At most 6 properties. Finish every property (endproperty) and close `endif`. Never start a property you cannot finish.
 - Add a cover for each non-trivial antecedent as a sequence, not an implication:
   `c_<name>: cover property (@(posedge clk) disable iff (!rst_n) <antecedent>);`
@@ -43,17 +46,31 @@ def zero_shot_user(*, module: str, spec: str, rtl: str) -> str:
     )
 
 
-def refinement_user(*, previous_sva: str, status: str, report: str) -> str:
+def refinement_user(
+    *,
+    previous_sva: str,
+    status: str,
+    report: str,
+    failed_assertions: tuple[str, ...] = (),
+    repeated: bool = False,
+) -> str:
     """User message after sby FAIL/ERROR. Ground the rewrite in the solver diagnostic."""
+    labels = ", ".join(failed_assertions) if failed_assertions else "(see diagnostic)"
+    repeat = (
+        "You submitted the SAME failing labels as the last turn. Delete those properties "
+        "entirely and write different ones. Do not copy the previous block.\n\n"
+        if repeated
+        else ""
+    )
     return (
+        f"{repeat}"
         f"The previous assertion block did not formally verify.\n"
-        f"Harness status: {status}\n\n"
+        f"Harness status: {status}\n"
+        f"FAILED LABELS (delete or fully rewrite; do not keep them unchanged): {labels}\n\n"
         f"## Previous attempt\n```systemverilog\n{previous_sva.strip()}\n```\n\n"
         f"## Solver / lowering diagnostic (ground truth; do not ignore)\n{report.strip()}\n\n"
-        f"Diagnose whether the bug is in the assertion or would require RTL change. "
         f"RTL is golden — fix the SVA. Emit a complete replacement block, not a diff.\n"
-        f"If a next-cycle (|=>) equality failed, the consequent almost certainly needs $past "
-        f"on the previous value. If lowering said there were no statements, the last attempt "
-        f"was truncated: emit fewer, fully-closed properties (endproperty + `endif).\n"
-        f"Do not use empty bit-selects like req[] or generate/genvar loops.\n"
+        f"If a next-cycle (|=>) equality failed, the consequent needs $past on the old value.\n"
+        f"If a reset-named assert failed, you used rst_n or !rst_n as the antecedent — delete it.\n"
+        f"Do not use empty bit-selects, generate/genvar, or coverproperty (it is cover property).\n"
     )

@@ -207,11 +207,23 @@ def run_block(
             break
         if turn == max_turns:
             break
+        repeated = bool(len(attempts) >= 2) and set(result.failed_assertions) == set(
+            attempts[-2].result.failed_assertions
+        )
+        temp = getattr(generator, "temperature", None)
+        if isinstance(temp, float):
+            generator.temperature = min(0.6, 0.2 + 0.15 * turn)  # type: ignore[attr-defined]
         messages.append(Message("assistant", sva))
         messages.append(
             Message(
                 "user",
-                refinement_user(previous_sva=sva, status=result.status, report=result.report),
+                refinement_user(
+                    previous_sva=sva,
+                    status=result.status,
+                    report=result.report,
+                    failed_assertions=result.failed_assertions,
+                    repeated=repeated,
+                ),
             )
         )
     return Trajectory(
