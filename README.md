@@ -36,8 +36,11 @@ fsyn golden
 
 # 4b. Sign-off gate: prove + cover/vacuity + COI + mutation kill
 fsyn gate --only counter
-# fsyn gate                         # all golden blocks (many sby runs)
+# fsyn gate                         # all golden blocks
 # fsyn gate --dut path/to/dut.sv --sva path/to/cand.sva.sv --top dut
+# AssertLLM2 (clone separately; do not copy into benchmarks/golden):
+# fsyn gate --suite assertllm2 --root ~/src/AssertLLM2 --list
+# fsyn gate --suite assertllm2 --root ~/src/AssertLLM2 --only versatile_counter --sva cand.sva.sv
 
 # 5. Verify a candidate SVA against a DUT
 fsyn verify --dut benchmarks/golden/sync_fifo/sync_fifo.sv --top sync_fifo \

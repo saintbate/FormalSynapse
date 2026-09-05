@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -194,8 +195,15 @@ def evaluate(
     timeout_s: float = 60.0,
     max_mutants: int = 8,
     run_cover: bool = True,
+    mutants: Sequence[Mutant] | None = None,
+    extra_files: tuple[Path, ...] = (),
+    clock: str = "clk",
 ) -> GateReport:
-    """Run prove + optional cover + COI + mutation kill on one pair."""
+    """Run prove + optional cover + COI + mutation kill on one pair.
+
+    ``mutants`` overrides the cheap local mutator (used for AssertLLM2
+    shipped mutants). Extra compile units are passed through to ``sby``.
+    """
     rtl = dut.read_text(encoding="utf-8")
     sva_text = sva.read_text(encoding="utf-8") if isinstance(sva, Path) else sva
     label = block or top
@@ -208,6 +216,8 @@ def evaluate(
         timeout_s=timeout_s,
         workdir=workdir,
         run_name="prove",
+        extra_files=extra_files,
+        clock=clock,
     )
     cover_result: VerifyResult | None = None
     if run_cover and _sva_has_cover(sva_text):
@@ -220,11 +230,14 @@ def evaluate(
             timeout_s=timeout_s,
             workdir=workdir,
             run_name="cover",
+            extra_files=extra_files,
+            clock=clock,
         )
     coi = coi_report(rtl, top, sva_text)
-    mutants = generate_mutants(rtl, max_mutants=max_mutants)
+    chosen = tuple(mutants) if mutants is not None else generate_mutants(rtl, max_mutants=max_mutants)
+    chosen = chosen[: max(0, max_mutants)]
     outcomes: list[MutantOutcome] = []
-    for mutant in mutants:
+    for mutant in chosen:
         mutant_dir = workdir / "mutants" / mutant.name
         mutant_dir.mkdir(parents=True, exist_ok=True)
         mutant_dut = mutant_dir / f"{top}.sv"
@@ -238,6 +251,8 @@ def evaluate(
             timeout_s=timeout_s,
             workdir=workdir,
             run_name=f"mutant-{mutant.name}",
+            extra_files=extra_files,
+            clock=clock,
         )
         outcomes.append(MutantOutcome(mutant=mutant, result=result))
     return GateReport(

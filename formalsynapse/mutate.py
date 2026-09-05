@@ -33,7 +33,7 @@ _OPS: tuple[tuple[str, str, str], ...] = (
 _IF_IDENT = re.compile(r"\bif\s*\(\s*(!?)\s*([A-Za-z_]\w*)\s*\)")
 _SKIP_LINE = re.compile(r"\b(rst_n|reset|localparam|parameter)\b", re.IGNORECASE)
 _PROTECTED_UNARY = frozenset({"rst_n", "reset", "clk", "clock"})
-_NBA_LVALUE = re.compile(r"^\s*(?:begin\s+)?[\w\.\[\]:]+\s*$")
+_NBA_LVALUE = re.compile(r"^\s*(?:begin\s+)?(?:[\w\.]+\s*:\s*)?[\w\.\[\]]+\s*$")
 _RELATIONAL = frozenset({"le_ge", "ge_le"})
 
 
@@ -76,6 +76,16 @@ def _looks_like_nba(line: str, col: int) -> bool:
     return bool(_NBA_LVALUE.match(line[:col]))
 
 
+def _bracket_depth(text: str, index: int) -> int:
+    depth = 0
+    for ch in text[:index]:
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+    return depth
+
+
 def _replace_once(text: str, start: int, end: int, repl: str) -> str:
     return text[:start] + repl + text[end:]
 
@@ -107,9 +117,12 @@ def generate_mutants(dut_text: str, *, max_mutants: int = 8) -> tuple[Mutant, ..
                 continue
             if src in {"<", ">"}:
                 nxt_ch = scan[nxt] if nxt < len(scan) else ""
-                if nxt_ch in {"=", src}:
+                prev = _prev_nons(scan, idx)
+                if nxt_ch in {"=", src} or prev == src:
                     continue
             if src in {"+", "-"}:
+                if _bracket_depth(scan, idx) > 0:
+                    continue
                 prev = _prev_nons(scan, idx)
                 if not (prev.isalnum() or prev in {"_", "]"}):
                     continue

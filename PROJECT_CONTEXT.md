@@ -104,9 +104,29 @@ end of `FSYN_LLM_BASE_URL`. Do not rent 8×A100 until that is true.
 ### Weeks 3–4 (in progress)
 
 `fsyn gate` is in the tree: BMC prove, cover/vacuity, cheap identifier COI, and
-AssertLLM2-style mutation kill (`&&`/`||`, `==`/`!=`, relational, `+`/`-`, `if`
-polarity). Mutants are written under the workdir; `benchmarks/golden/**` is not
-edited. Next: ingest AssertLLM2 designs/mutants and publish open-grader baselines.
+mutation kill. Mutants are written under the workdir; `benchmarks/golden/**` is
+not edited.
+
+Golden-suite open-grader baseline (BMC depth 20, 8 cheap mutants, `sby` only —
+these are not JasperGold numbers):
+
+| block | prove | cover | coi | kill |
+|---|---|---|---|---|
+| counter | PASS | PASS | 1.00 | 8/8 |
+| edge_detector | PASS | PASS | 1.00 | 1/1 |
+| gray_counter | PASS | PASS | 1.00 | 2/2 |
+| onehot_fsm | PASS | PASS | 0.44 | 1/2 |
+| priority_arbiter | PASS | PASS | 1.00 | 6/6 |
+| rr_arbiter | PASS | PASS | 0.50 | 0/0 |
+| shift_register | PASS | PASS | 1.00 | 2/2 |
+| skid_buffer | PASS | PASS | 0.88 | 5/5 |
+| spi_master | PASS | PASS | 0.70 | 2/6 |
+| sync_fifo | PASS | PASS | 0.58 | 7/7 |
+
+AssertLLM2 ingest: `fsyn gate --suite assertllm2 --root <clone> --list` walks the
+83-design tree, skips VHDL, and indexes shipped `mutations/mutants/M_*`. Gate a
+candidate with `--sva`. Do not vendor the designs. Next: published open-grader
+numbers on a Verilog subset once a generator is pointed at those specs.
 
 ### Weeks 5–6
 

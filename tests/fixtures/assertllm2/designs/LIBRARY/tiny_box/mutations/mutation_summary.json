@@ -1,0 +1,10 @@
+{
+  "cache_schema": "assertbench_mutations_v1",
+  "mutants": [
+    {
+      "applied_to_source_files": ["tiny_box.sv"],
+      "log": "M_0000: applied. LOR(Plus->Minus) -> Plus @ line 12: (count + 4'd1)  ==>  Minus @ line 0: (count - 4'd1)",
+      "mutant_id": "M_0000"
+    }
+  ]
+}

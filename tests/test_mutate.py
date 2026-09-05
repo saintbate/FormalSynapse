@@ -75,6 +75,35 @@ def test_max_mutants_cap() -> None:
     assert generate_mutants(ARITH, max_mutants=0) == ()
 
 
+def test_skips_shifts_case_nba_and_array_bounds() -> None:
+    rtl = """\
+module gray (
+    input  logic clk,
+    input  logic rst_n,
+    input  logic start,
+    output logic [3:0] gray
+);
+    localparam DEPTH = 8;
+    logic [3:0] bin;
+    logic [7:0] mem [0:DEPTH-1];
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) bin <= 4'd0;
+        else unique case (1'b1)
+            start: bin <= bin + 4'd1;
+            default: bin <= bin;
+        endcase
+    end
+    assign gray = bin ^ (bin >> 1);
+endmodule
+"""
+    mutants = generate_mutants(rtl, max_mutants=16)
+    texts = [m.rtl for m in mutants]
+    assert not any("bin > < 1" in t or "bin < < 1" in t for t in texts)
+    assert not any("bin >= " in t for t in texts)
+    assert not any("DEPTH+1" in t for t in texts)
+    assert any(m.operator == "add_sub" and "bin - 4'd1" in m.rtl for m in mutants)
+
+
 def test_does_not_mutate_comments() -> None:
     rtl = COUNTER + "\n// count <= count + 4'd1 && en\n"
     mutants = generate_mutants(rtl, max_mutants=16)

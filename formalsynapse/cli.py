@@ -8,6 +8,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from formalsynapse import __version__, toolchain
+from formalsynapse.assertllm2 import Design as AssertLLM2Design
+from formalsynapse.assertllm2 import default_root as assertllm2_default_root
+from formalsynapse.assertllm2 import discover as discover_assertllm2
+from formalsynapse.assertllm2 import load_mutants as load_assertllm2_mutants
+from formalsynapse.assertllm2 import select as select_assertllm2
+from formalsynapse.assertllm2 import write_index as write_assertllm2_index
 from formalsynapse.cegar import MAX_FEEDBACK, Attempt, run_block, run_suite
 from formalsynapse.dataset import log_suite, log_trajectory
 from formalsynapse.gate import GateReport, evaluate, write_report
@@ -20,6 +26,7 @@ from formalsynapse.verify_harness import VerifyResult, verify
 
 def _print(msg: str) -> None:
     sys.stdout.write(msg if msg.endswith("\n") else msg + "\n")
+    sys.stdout.flush()
 
 
 def _print_suite_attempt(name: str, att: Attempt) -> None:
@@ -347,74 +354,185 @@ def _print_gate_table(rows: list[GateReport]) -> None:
         )
 
 
+def _unique_extras(files: tuple[Path, ...]) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in files:
+        if path.name in seen:
+            continue
+        seen.add(path.name)
+        out.append(path)
+    return tuple(out)
+
+
+def _resolve_sva(args: argparse.Namespace, name: str, default: Path | None) -> Path | None:
+    if args.sva is None:
+        return default
+    path = Path(args.sva)
+    if path.is_dir():
+        return path / f"{name}.sva.sv"
+    return path
+
+
+def _print_assertllm2_index(rows: list[AssertLLM2Design]) -> None:
+    if not rows:
+        _print("no AssertLLM2 designs found")
+        return
+    key_w = max(len(d.key) for d in rows)
+    _print(f"{'key':<{key_w}}  lang      top            mutants  skip")
+    for design in rows:
+        skip = design.skip_reason or "-"
+        _print(
+            f"{design.key:<{key_w}}  {design.language:<8}  {design.top:<14}  "
+            f"{len(design.mutants):>7}  {skip}"
+        )
+    _print(
+        f"\n{sum(1 for d in rows if d.open_ok)}/{len(rows)} open-ok, "
+        f"{sum(1 for d in rows if d.mutants)} with shipped mutants "
+        "(sby numbers, not JasperGold)"
+    )
+
+
 def cmd_gate(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir)
+    if args.suite == "assertllm2" and args.list:
+        root = Path(args.root) if args.root else assertllm2_default_root()
+        if root is None:
+            _print("AssertLLM2 root required: --root or FSYN_ASSERTLLM2_ROOT")
+            return 1
+        try:
+            designs = discover_assertllm2(root)
+        except FileNotFoundError as exc:
+            _print(str(exc))
+            return 1
+        chosen = select_assertllm2(designs, only=args.only, open_only=False)
+        write_assertllm2_index(chosen, workdir / "assertllm2_index.json")
+        _print_assertllm2_index(list(chosen))
+        _print(f"index -> {workdir / 'assertllm2_index.json'}")
+        return 0
+
     if not toolchain.have_sby():
         _print("sby/yosys/z3 not found; run scripts/install_toolchain.sh && source scripts/env.sh")
         return 1
-    workdir = Path(args.workdir)
-    pairs: list[tuple[str, Path, Path, str]] = []
-    if args.dut is not None:
-        dut = Path(args.dut)
-        sva = Path(args.sva) if args.sva else dut.with_name(f"{dut.stem}.sva.sv")
-        top = args.top or dut.stem
-        if not sva.is_file():
-            _print(f"missing SVA file {sva}")
-            return 1
-        pairs.append((top, dut, sva, top))
-    else:
-        blocks = _golden_blocks()
-        if args.only:
-            wanted = set(args.only)
-            blocks = [b for b in blocks if b.name in wanted]
-        if not blocks:
-            _print("no golden blocks selected")
-            return 1
-        for block in blocks:
-            name = block.name
-            dut = block / f"{name}.sv"
-            sva = block / f"{name}.sva.sv"
-            if not sva.is_file():
-                _print(f"[{name}] missing {sva.name}")
-                return 1
-            pairs.append((name, dut, sva, name))
 
     rows: list[GateReport] = []
     failed = 0
-    for name, dut, sva, top in pairs:
-        block_dir = workdir / f"gate-{name}"
-        _print(f"[{name}] prove + cover + COI + mutation ({args.max_mutants} mutants)")
-        report = evaluate(
-            dut,
-            sva,
-            top,
-            block_dir,
-            block=name,
-            depth=args.depth,
-            timeout_s=args.timeout,
-            max_mutants=args.max_mutants,
-            run_cover=not args.no_cover,
-        )
-        write_report(report, block_dir / "gate.json")
-        _print(
-            f"[{name}] prove={report.prove.status} cover={_cover_cell(report)} "
-            f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
-            f"({100.0 * report.kill_rate:.0f}%)"
-        )
-        if report.prove.status != "PASS" and report.prove.errors:
-            _print(f"  {report.prove.errors[0][:400]}")
-        for outcome in report.mutants:
-            mark = "KILL" if outcome.killed else outcome.result.status
-            _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
-        rows.append(report)
-        if not report.passed or report.kill_rate < args.min_kill:
-            failed += 1
 
-    _print("")
-    _print_gate_table(rows)
-    _print(
-        f"\ngate: {len(rows) - failed}/{len(rows)} PASS "
-        f"(prove+cover, min-kill {args.min_kill:.0%})"
-    )
+    if args.suite == "assertllm2":
+        root = Path(args.root) if args.root else assertllm2_default_root()
+        if root is None:
+            _print("AssertLLM2 root required: --root or FSYN_ASSERTLLM2_ROOT")
+            return 1
+        try:
+            designs = discover_assertllm2(root)
+        except FileNotFoundError as exc:
+            _print(str(exc))
+            return 1
+        chosen = select_assertllm2(designs, only=args.only, open_only=not args.include_skipped)
+        if not chosen:
+            _print("no open AssertLLM2 designs selected")
+            return 1
+        for design in chosen:
+            sva = _resolve_sva(args, design.name, None)
+            if sva is None or not sva.is_file():
+                _print(f"[{design.key}] missing candidate SVA (pass --sva file or directory)")
+                failed += 1
+                continue
+            shipped = load_assertllm2_mutants(design, max_mutants=args.max_mutants)
+            block_dir = workdir / f"gate-{design.name}"
+            _print(
+                f"[{design.key}] prove + cover + COI + {len(shipped)} shipped mutants"
+            )
+            report = evaluate(
+                design.dut,
+                sva,
+                design.top,
+                block_dir,
+                block=design.key,
+                depth=args.depth,
+                timeout_s=args.timeout,
+                max_mutants=args.max_mutants,
+                run_cover=not args.no_cover,
+                mutants=shipped,
+                extra_files=_unique_extras(design.extras),
+            )
+            write_report(report, block_dir / "gate.json")
+            _print(
+                f"[{design.key}] prove={report.prove.status} cover={_cover_cell(report)} "
+                f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
+                f"({100.0 * report.kill_rate:.0f}%)"
+            )
+            if report.prove.status != "PASS" and report.prove.errors:
+                _print(f"  {report.prove.errors[0][:400]}")
+            for outcome in report.mutants:
+                mark = "KILL" if outcome.killed else outcome.result.status
+                _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
+            rows.append(report)
+            if not report.passed or report.kill_rate < args.min_kill:
+                failed += 1
+    else:
+        pairs: list[tuple[str, Path, Path, str]] = []
+        if args.dut is not None:
+            dut = Path(args.dut)
+            sva_path = _resolve_sva(args, dut.stem, dut.with_name(f"{dut.stem}.sva.sv"))
+            top = args.top or dut.stem
+            if sva_path is None or not sva_path.is_file():
+                _print(f"missing SVA file {sva_path}")
+                return 1
+            pairs.append((top, dut, sva_path, top))
+        else:
+            blocks = _golden_blocks()
+            if args.only:
+                wanted = set(args.only)
+                blocks = [b for b in blocks if b.name in wanted]
+            if not blocks:
+                _print("no golden blocks selected")
+                return 1
+            for block in blocks:
+                name = block.name
+                dut = block / f"{name}.sv"
+                sva_path = block / f"{name}.sva.sv"
+                if not sva_path.is_file():
+                    _print(f"[{name}] missing {sva_path.name}")
+                    return 1
+                pairs.append((name, dut, sva_path, name))
+
+        for name, dut, sva_path, top in pairs:
+            block_dir = workdir / f"gate-{name}"
+            _print(f"[{name}] prove + cover + COI + mutation ({args.max_mutants} mutants)")
+            report = evaluate(
+                dut,
+                sva_path,
+                top,
+                block_dir,
+                block=name,
+                depth=args.depth,
+                timeout_s=args.timeout,
+                max_mutants=args.max_mutants,
+                run_cover=not args.no_cover,
+            )
+            write_report(report, block_dir / "gate.json")
+            _print(
+                f"[{name}] prove={report.prove.status} cover={_cover_cell(report)} "
+                f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
+                f"({100.0 * report.kill_rate:.0f}%)"
+            )
+            if report.prove.status != "PASS" and report.prove.errors:
+                _print(f"  {report.prove.errors[0][:400]}")
+            for outcome in report.mutants:
+                mark = "KILL" if outcome.killed else outcome.result.status
+                _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
+            rows.append(report)
+            if not report.passed or report.kill_rate < args.min_kill:
+                failed += 1
+
+    if rows:
+        _print("")
+        _print_gate_table(rows)
+        _print(
+            f"\ngate: {len(rows) - failed}/{len(rows)} PASS "
+            f"(prove+cover, min-kill {args.min_kill:.0%})"
+        )
     return 0 if failed == 0 else 1
 
 
@@ -456,10 +574,28 @@ def build_parser() -> argparse.ArgumentParser:
         "gate",
         help="prove + cover/vacuity + COI + mutation kill (golden suite or one pair)",
     )
+    gate.add_argument(
+        "--suite",
+        choices=("golden", "assertllm2"),
+        default="golden",
+        help="golden (default) or an AssertLLM2 checkout",
+    )
+    gate.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="AssertLLM2 repo root (or set FSYN_ASSERTLLM2_ROOT)",
+    )
+    gate.add_argument("--list", action="store_true", help="index a suite and exit (no sby)")
+    gate.add_argument(
+        "--include-skipped",
+        action="store_true",
+        help="do not drop VHDL / broken AssertLLM2 dirs from selection",
+    )
     gate.add_argument("--dut", type=Path, default=None, help="DUT .sv (omit to run benchmarks/golden)")
-    gate.add_argument("--sva", type=Path, default=None, help="candidate SVA (default: <dut-stem>.sva.sv)")
+    gate.add_argument("--sva", type=Path, default=None, help="candidate SVA file, or a directory of <name>.sva.sv")
     gate.add_argument("--top", default=None)
-    gate.add_argument("--only", nargs="*", default=None, help="restrict golden blocks to these names")
+    gate.add_argument("--only", nargs="*", default=None, help="restrict to these block / design names")
     gate.add_argument("--depth", type=int, default=20)
     gate.add_argument("--timeout", type=float, default=60.0)
     gate.add_argument("--workdir", type=Path, default=default_workdir())
