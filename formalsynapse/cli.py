@@ -1,4 +1,4 @@
-"""Command-line interface: ``fsyn doctor | smoke | verify | golden | trace``."""
+"""Command-line interface: ``fsyn doctor | smoke | verify | golden | gate | trace``."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 from formalsynapse import __version__, toolchain
 from formalsynapse.cegar import MAX_FEEDBACK, Attempt, run_block, run_suite
 from formalsynapse.dataset import log_suite, log_trajectory
+from formalsynapse.gate import GateReport, evaluate, write_report
 from formalsynapse.generator import VLLMGenerator, ping
 from formalsynapse.paths import default_output_dir, default_workdir, golden_dir, smoke_dir
 from formalsynapse.sby_config import Frontend, Mode
@@ -323,6 +324,100 @@ def _run_suite_cmd(args: argparse.Namespace, *, max_feedback: int, label: str) -
     return 0 if report.cegar_rate == 1.0 else 1
 
 
+def _cover_cell(report: GateReport) -> str:
+    if report.cover is None:
+        return "n/a"
+    return report.cover.status
+
+
+def _print_gate_table(rows: list[GateReport]) -> None:
+    name_w = max((len(r.block) for r in rows), default=6)
+    _print(
+        f"{'block':<{name_w}}  prove    cover    coi   mutants  killed  kill%"
+    )
+    for report in rows:
+        _print(
+            f"{report.block:<{name_w}}  "
+            f"{report.prove.status:<7}  "
+            f"{_cover_cell(report):<7}  "
+            f"{report.coi.coverage:4.2f}  "
+            f"{len(report.valid_mutants):>7}  "
+            f"{report.killed:>6}  "
+            f"{100.0 * report.kill_rate:5.1f}%"
+        )
+
+
+def cmd_gate(args: argparse.Namespace) -> int:
+    if not toolchain.have_sby():
+        _print("sby/yosys/z3 not found; run scripts/install_toolchain.sh && source scripts/env.sh")
+        return 1
+    workdir = Path(args.workdir)
+    pairs: list[tuple[str, Path, Path, str]] = []
+    if args.dut is not None:
+        dut = Path(args.dut)
+        sva = Path(args.sva) if args.sva else dut.with_name(f"{dut.stem}.sva.sv")
+        top = args.top or dut.stem
+        if not sva.is_file():
+            _print(f"missing SVA file {sva}")
+            return 1
+        pairs.append((top, dut, sva, top))
+    else:
+        blocks = _golden_blocks()
+        if args.only:
+            wanted = set(args.only)
+            blocks = [b for b in blocks if b.name in wanted]
+        if not blocks:
+            _print("no golden blocks selected")
+            return 1
+        for block in blocks:
+            name = block.name
+            dut = block / f"{name}.sv"
+            sva = block / f"{name}.sva.sv"
+            if not sva.is_file():
+                _print(f"[{name}] missing {sva.name}")
+                return 1
+            pairs.append((name, dut, sva, name))
+
+    rows: list[GateReport] = []
+    failed = 0
+    for name, dut, sva, top in pairs:
+        block_dir = workdir / f"gate-{name}"
+        _print(f"[{name}] prove + cover + COI + mutation ({args.max_mutants} mutants)")
+        report = evaluate(
+            dut,
+            sva,
+            top,
+            block_dir,
+            block=name,
+            depth=args.depth,
+            timeout_s=args.timeout,
+            max_mutants=args.max_mutants,
+            run_cover=not args.no_cover,
+        )
+        write_report(report, block_dir / "gate.json")
+        _print(
+            f"[{name}] prove={report.prove.status} cover={_cover_cell(report)} "
+            f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
+            f"({100.0 * report.kill_rate:.0f}%)"
+        )
+        if report.prove.status != "PASS" and report.prove.errors:
+            _print(f"  {report.prove.errors[0][:400]}")
+        for outcome in report.mutants:
+            mark = "KILL" if outcome.killed else outcome.result.status
+            _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
+        rows.append(report)
+        if not report.passed or report.kill_rate < args.min_kill:
+            failed += 1
+
+    _print("")
+    _print_gate_table(rows)
+    _print(
+        f"\ngate: {len(rows) - failed}/{len(rows)} PASS "
+        f"(prove+cover, min-kill {args.min_kill:.0%})"
+    )
+    return 0 if failed == 0 else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fsyn",
@@ -356,6 +451,26 @@ def build_parser() -> argparse.ArgumentParser:
     golden.add_argument("--timeout", type=float, default=300.0)
     golden.add_argument("--workdir", type=Path, default=default_workdir())
     golden.add_argument("--cover", action="store_true", help="also run cover (antecedent reachability)")
+
+    gate = sub.add_parser(
+        "gate",
+        help="prove + cover/vacuity + COI + mutation kill (golden suite or one pair)",
+    )
+    gate.add_argument("--dut", type=Path, default=None, help="DUT .sv (omit to run benchmarks/golden)")
+    gate.add_argument("--sva", type=Path, default=None, help="candidate SVA (default: <dut-stem>.sva.sv)")
+    gate.add_argument("--top", default=None)
+    gate.add_argument("--only", nargs="*", default=None, help="restrict golden blocks to these names")
+    gate.add_argument("--depth", type=int, default=20)
+    gate.add_argument("--timeout", type=float, default=60.0)
+    gate.add_argument("--workdir", type=Path, default=default_workdir())
+    gate.add_argument("--max-mutants", type=int, default=8)
+    gate.add_argument(
+        "--min-kill",
+        type=float,
+        default=0.0,
+        help="fail the gate if mutation kill rate is below this (default 0.0)",
+    )
+    gate.add_argument("--no-cover", action="store_true", help="skip the cover/vacuity sby run")
 
     trace = sub.add_parser("trace", help="pretty-print a yosys-smtbmc counterexample VCD")
     trace.add_argument("vcd", type=Path)
@@ -394,6 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "smoke": cmd_smoke,
         "verify": cmd_verify,
         "golden": cmd_golden,
+        "gate": cmd_gate,
         "trace": cmd_trace,
         "generate": cmd_generate,
         "baseline": cmd_baseline,

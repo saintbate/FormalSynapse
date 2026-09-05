@@ -43,7 +43,8 @@ Do not edit a file that Kilo is currently iterating on; wait for its diff to lan
 
 ## Repo map
 - `formalsynapse/` package: toolchain.py, sva_inject.py, sva_lower.py, sva_edit.py, design_context.py,
-  sby_config.py, verify_harness.py, vcd_parser.py, generator.py, cegar.py, cli.py (`fsyn`).
+  sby_config.py, verify_harness.py, vcd_parser.py, generator.py, cegar.py, mutate.py, gate.py,
+  cli.py (`fsyn`).
 - `benchmarks/golden/<block>/{<block>.sv, <block>.spec.md, <block>.sva.sv, <block>.sby}`.
 - `benchmarks/smoke/counter/` end-to-end toolchain check.
 - `scripts/install_toolchain.sh`, `scripts/env.sh`.

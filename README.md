@@ -7,7 +7,7 @@ is the referee. Full context and roadmap: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.m
 Position: the formal sign-off gate for open silicon (Yosys/`sby` only). See
 [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) for the revised roadmap.
 
-This repository currently contains the harness, golden suite, CEGAR loop, and Week 1–2 generator changes:
+This repository currently contains the harness, golden suite, CEGAR loop, Week 1–2 generator changes, and the `fsyn gate` quality checks:
 
 - a 10-block golden benchmark suite with hand-written, formally proven SVAs (`benchmarks/golden/`)
 - the Python verification bridge (`formalsynapse/`): SVA injection, `.sby` generation, `sby` execution,
@@ -33,6 +33,11 @@ fsyn smoke
 
 # 4. Prove the whole golden suite (BMC depth 20 with Z3)
 fsyn golden
+
+# 4b. Sign-off gate: prove + cover/vacuity + COI + mutation kill
+fsyn gate --only counter
+# fsyn gate                         # all golden blocks (many sby runs)
+# fsyn gate --dut path/to/dut.sv --sva path/to/cand.sva.sv --top dut
 
 # 5. Verify a candidate SVA against a DUT
 fsyn verify --dut benchmarks/golden/sync_fifo/sync_fifo.sv --top sync_fifo \

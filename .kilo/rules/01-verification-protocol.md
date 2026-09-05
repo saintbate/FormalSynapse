@@ -16,6 +16,7 @@ You may NEVER declare a task complete simply by generating code. Every code modi
    - Run: `sby -f <task>.sby`
    - Exit code 0 (PASS) is mandatory.
    - Or use the project harness: `fsyn verify --dut <dut.sv> --top <module> --sva <sva.sv>`.
+   - Quality gate (vacuity + mutation kill): `fsyn gate --dut <dut.sv> --sva <sva.sv> --top <module>`.
 
 If any check returns a non-zero exit code, you must read the compiler or solver diagnostic, revise the file, and re-run the check. Only report back to the user once all verification checks pass.
 

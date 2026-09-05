@@ -54,7 +54,7 @@ asymmetric pieces are:
       v
  sva_lower -> inject -> sby     <-- only grader
       |
-      +-- PASS --> quality gate (vacuity / COI / mutation)   [Stage 3, next]
+      +-- PASS --> quality gate (vacuity / COI / mutation)   [fsyn gate]
       |
       +-- FAIL --> strip failed labels, keep survivors,
                    regenerate only those slots, sby picks the winner
@@ -101,10 +101,12 @@ Ten golden blocks remain the smoke suite, not the published score.
 Gate: first-pass on the 10 golden blocks should move off 0% once the 14B is on the other
 end of `FSYN_LLM_BASE_URL`. Do not rent 8×A100 until that is true.
 
-### Weeks 3–4
+### Weeks 3–4 (in progress)
 
-`fsyn gate`: reachability cover, COI, mutation kill (AssertLLM2 operator set). Ingest
-AssertLLM2 designs/mutants. Publish open-grader baselines.
+`fsyn gate` is in the tree: BMC prove, cover/vacuity, cheap identifier COI, and
+AssertLLM2-style mutation kill (`&&`/`||`, `==`/`!=`, relational, `+`/`-`, `if`
+polarity). Mutants are written under the workdir; `benchmarks/golden/**` is not
+edited. Next: ingest AssertLLM2 designs/mutants and publish open-grader baselines.
 
 ### Weeks 5–6
 
