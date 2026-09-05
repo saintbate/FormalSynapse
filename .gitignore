@@ -1,0 +1,36 @@
+# Toolchain (installed by scripts/install_toolchain.sh)
+tools/
+
+# Agent scratch space
+work/
+output/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+
+# sby task output directories (created next to each .sby as <name>_<task>/ or <name>/)
+benchmarks/**/*_bmc/
+benchmarks/**/*_prove/
+benchmarks/**/*_cover/
+benchmarks/**/*_fail/
+benchmarks/**/*_bmc_fail/
+benchmarks/**/*.sby.log
+
+# Waveforms and solver artifacts
+*.vcd
+!tests/fixtures/*.vcd
+*.yw
+*.fst
+*.smt2
+*.il
+
+# OS
+.DS_Store

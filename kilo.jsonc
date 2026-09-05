@@ -1,0 +1,27 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "instructions": [
+    ".kilo/rules/*.md"
+  ],
+  "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "webfetch": "ask",
+    "bash": {
+      "*": "ask",
+      // Whitelist deterministic verification toolchain (zero-friction execution)
+      "sby *": "allow",
+      "yosys *": "allow",
+      "verilator *": "allow",
+      "z3 *": "allow",
+      "pytest *": "allow",
+      "ruff *": "allow",
+      "mypy *": "allow",
+      // Project harness and its uv-managed environment
+      "uv run *": "allow",
+      "fsyn *": "allow",
+      "git status": "allow",
+      "git diff *": "allow"
+    }
+  }
+}

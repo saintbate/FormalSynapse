@@ -1,0 +1,46 @@
+# FormalSynapse / OpenSVA-RL: Cursor Rules
+
+Full context: PROJECT_CONTEXT.md. Agent protocol shared with Kilo Code: .kilo/rules/*.md.
+
+## Role of Cursor in this repo
+Cursor is the interactive pilot: architecture, scaffolding, code review, documentation.
+Kilo Code is the autonomous terminal worker that drives sby/yosys/verilator loops on `agent/*` branches.
+Do not edit a file that Kilo is currently iterating on; wait for its diff to land.
+
+## Non-negotiables
+- Determinism: an assertion is graded ONLY by running `sby` (via `formalsynapse.verify_harness`). Never let an LLM judge whether an SVA is correct.
+- Local-first: no proprietary cloud APIs in the verification path. Everything must work air-gapped.
+- Protected files: never modify `benchmarks/golden/**` unless explicitly instructed. Scratch goes in `work/` or `output/`.
+- Python: `ruff check` and `mypy --strict` must pass. Stdlib only in `formalsynapse/` unless a dependency is explicitly approved.
+- Verilog: every `.sv` must pass `verilator --lint-only -Wall`. Every `.sby` in `benchmarks/` must exit 0.
+
+## Toolchain facts (do not assume otherwise)
+- Tools come from the OSS CAD Suite under `tools/oss-cad-suite/` (run `source scripts/env.sh`).
+- Open-source Yosys `read_verilog -sv -formal` supports only immediate assertions.
+  Concurrent SVA (`property/endproperty`, `|->`, `|=>`, `##[m:n]`, `disable iff`, `$past/$rose/$fell/$stable`)
+  is compiled through the `yosys-slang` frontend: `plugin -i slang` then `read_slang -D FORMAL ...`.
+- Assertions live INSIDE the DUT module, wrapped in `` `ifdef FORMAL ... `endif ``, so they can see internal regs.
+- sby writes counterexamples to `<task>/engine_0/trace.vcd`; parse with `formalsynapse.vcd_parser`.
+
+## SVA quality standards (mirror of .kilo/rules/02-sva-guardrails.md)
+- No vacuous antecedents (`(a && !a) |-> b`). Every antecedent must be reachable; add a `cover` for it.
+- Only reference signals in the module port list or declared internal regs. Never invent signals.
+- Every clocked property: `@(posedge clk) disable iff (!rst_n)`.
+- `|->` only when the consequent holds in the SAME cycle as the antecedent; `|=>` for the NEXT cycle.
+- Prefer bounded windows (`##[1:10]`) over `##[0:$]` for BMC.
+- Template:
+  ```systemverilog
+  property p_<module>_<name>;
+      @(posedge clk) disable iff (!rst_n)
+      <antecedent> |=> <consequent>;
+  endproperty
+  a_<module>_<name>: assert property (p_<module>_<name>)
+      else $error("Assertion Failed: <name> violated at cycle %0t", $time);
+  ```
+
+## Repo map
+- `formalsynapse/` package: toolchain.py, sva_inject.py, sby_config.py, verify_harness.py, vcd_parser.py, cli.py (`fsyn`).
+- `benchmarks/golden/<block>/{<block>.sv, <block>.spec.md, <block>.sva.sv, <block>.sby}`.
+- `benchmarks/smoke/counter/` end-to-end toolchain check.
+- `scripts/install_toolchain.sh`, `scripts/env.sh`.
+- `tests/` pytest; toolchain-dependent tests are marked `toolchain` and skip when `sby` is missing.
