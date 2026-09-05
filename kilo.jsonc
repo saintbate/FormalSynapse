@@ -1,5 +1,9 @@
 {
   "$schema": "https://app.kilo.ai/config.json",
+  // Model is chosen in the Kilo UI. Routing policy: .kilo/rules/03-model-routing.md
+  //   scaffolding  -> OpenRouter deepseek/deepseek-chat (V3) or qwen/qwen-2.5-coder-32b-instruct
+  //   SVA / CEGAR  -> OpenRouter deepseek/deepseek-r1
+  //   air-gapped   -> local vLLM  http://localhost:8000/v1  Qwen/Qwen2.5-Coder-7B-Instruct
   "instructions": [
     ".kilo/rules/*.md"
   ],

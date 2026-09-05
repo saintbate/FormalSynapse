@@ -32,5 +32,8 @@ benchmarks/**/*.sby.log
 *.smt2
 *.il
 
+# Secrets (OpenRouter / vLLM keys). Never commit.
+.env
+
 # OS
 .DS_Store

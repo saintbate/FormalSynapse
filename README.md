@@ -15,9 +15,10 @@ This repository currently contains Phases 1-2 of the roadmap:
 ## Quickstart
 
 ```bash
-# 1. Install the OSS CAD Suite (yosys, sby, z3, bitwuzla, boolector, verilator, yosys-slang) into tools/
+# 1. Install the OSS CAD Suite (yosys, sby, z3, bitwuzla, boolector, verilator, yosys-slang)
+#    into $HOME/.local/opt/oss-cad-suite (outside the repo — this workspace path contains ':' )
 scripts/install_toolchain.sh          # macOS arm64 by default; PLATFORM=linux-x64 for Ubuntu/WSL2
-source scripts/env.sh                 # puts tools/oss-cad-suite/bin on PATH
+source scripts/env.sh                 # puts the suite on PATH and defines the `fsyn` wrapper
 
 # 2. Python environment (uv)
 uv sync
@@ -41,10 +42,12 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
 ## Toolchain notes
 
 - Open-source Yosys (`read_verilog -sv -formal`) supports only immediate assertions. Concurrent SVA
-  (`property`/`endproperty`, `|->`, `|=>`, `##[m:n]`, `disable iff`, `$past`, `$rose`, ...) is compiled
-  through the `yosys-slang` frontend, which ships with the OSS CAD Suite. `fsyn doctor` confirms that the
-  plugin loads. `fsyn verify --frontend verilog` falls back to the built-in frontend for
-  immediate-assertion checkers.
+  (`property`/`endproperty`, `|->`, `|=>`, `##[m:n]`, `disable iff`) is the *authoring* format
+  (`.sva.sv` files). `formalsynapse.sva_lower` compiles a bounded subset of that format into
+  immediate assertions before `sby` runs. The OSS CAD Suite ships `yosys-slang`, but the 2026
+  builds still reject `assert property` (`SVA unsupported`). `fsyn doctor` probes both plugin load
+  and concurrent-SVA support so we can switch the frontend when slang catches up.
+  `fsyn verify --frontend slang` is available for that day; the default is `--frontend verilog`.
 - Assertions live inside the DUT module under `` `ifdef FORMAL ... `endif `` so they can observe internal
   registers. `formalsynapse.sva_inject` does this automatically for candidate SVA blocks.
 - Each golden block ships a `.sby` with `bmc`, `cover` (antecedent reachability / non-vacuity) and, where
@@ -64,10 +67,43 @@ tests/                        pytest (unit tests always run; `toolchain` tests s
 work/, output/                gitignored scratch for agents and harness runs
 ```
 
+## Phase 3: zero-shot baseline and CEGAR
+
+The generator is an OpenAI-compatible client aimed at **local vLLM** serving
+`Qwen/Qwen2.5-Coder-7B-Instruct` with **guided grammar** (vLLM's outlines/xgrammar backend).
+`sby` is still the only grader.
+
+```bash
+# On a CUDA box (or any host that can run vLLM):
+scripts/run_vllm.sh
+
+# From this repo (point at that server if it is not localhost):
+export FSYN_LLM_BASE_URL=http://localhost:8000/v1
+export FSYN_LLM_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct
+
+fsyn doctor                  # pings the LLM endpoint
+fsyn baseline                # zero-shot pass rate on benchmarks/golden (target 15–25%)
+fsyn cegar                   # + up to 3 solver-feedback turns (target 50–60%)
+fsyn generate benchmarks/golden/counter --max-feedback 3 --out /tmp/counter.sva.sv
+```
+
+Healed `(Prompt, Faulty_Attempt, Counterexample, Fixed_Attempt)` rows are appended to
+`trajectories.jsonl` under `output/` (or `~/.cache/formalsynapse/output` when the repo path
+contains `:`). That file is the Phase 4 RLVR seed.
+
+This Mac does not run vLLM; keep the formal tools local and point `FSYN_LLM_BASE_URL` at a
+remote GPU. Any OpenAI-compatible host works, including OpenRouter, but the spec default is
+air-gapped vLLM.
+
 ## Dual-agent workflow (Cursor + Kilo Code)
 
 Cursor is the interactive pilot (architecture, review, scaffolding). Kilo Code is the autonomous terminal
 worker that runs `sby`/`verilator`/`ruff`/`mypy` loops until they pass, governed by `.kilo/rules/`.
+
+Kilo's *coding* model is separate from Phase 3's generator. As originally specified, route Kilo
+via OpenRouter (see `.kilo/rules/03-model-routing.md`): DeepSeek-V3 for scaffolding, DeepSeek-R1
+for temporal/CEGAR repair, local vLLM as the zero-cost fallback. Put the OpenRouter key in the
+Kilo UI — never in the repo.
 
 Anti-collision rules:
 
@@ -82,5 +118,9 @@ Anti-collision rules:
 uv run ruff check .
 uv run mypy
 uv run pytest                     # add -m toolchain to run only sby-backed tests
-for f in benchmarks/**/*.sv; do verilator --lint-only -Wall "$f"; done
+# DUT modules only (.sva.sv files are assertion fragments, not elaboratable tops)
+for f in benchmarks/golden/*/*.sv benchmarks/smoke/counter/counter.sv; do
+  case "$f" in *.sva.sv) continue ;; esac
+  verilator --lint-only -Wall --Wno-DECLFILENAME "$f"
+done
 ```

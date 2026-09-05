@@ -25,7 +25,7 @@ build-backend = "hatchling.build"
 packages = ["formalsynapse"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 extend-exclude = ["tools", "work", "output"]
 
@@ -42,5 +42,6 @@ exclude = ["tools/", "work/", "output/"]
 testpaths = ["tests"]
 markers = [
     "toolchain: requires the OSS CAD Suite (sby/yosys) on PATH; skipped when missing",
+    "llm: requires a live OpenAI-compatible LLM endpoint",
 ]
 addopts = "-ra"

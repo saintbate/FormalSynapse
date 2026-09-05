@@ -1,0 +1,21 @@
+[tasks]
+pass
+fail
+
+[options]
+pass: mode bmc
+pass: depth 12
+fail: mode bmc
+fail: depth 12
+
+[engines]
+smtbmc z3
+
+[script]
+pass: read_verilog -sv -formal counter.sv
+fail: read_verilog -sv -formal counter_fail.sv
+prep -top counter
+
+[files]
+counter.sv
+counter_fail.sv
