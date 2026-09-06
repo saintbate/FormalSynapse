@@ -28,6 +28,8 @@ def test_generate_assertllm2_parser() -> None:
     assert args.block is None
     assert args.suite == "assertllm2"
     assert args.only == ["versatile_counter"]
+    assert args.min_kill == 0.25
+    assert args.max_mutants == 8
 
 
 def test_trace_fixture(capsys: pytest.CaptureFixture[str]) -> None:

@@ -104,13 +104,9 @@ class MutantOutcome:
 
 
 @dataclass(frozen=True)
-class GateReport:
-    """Four-check gate result for one DUT + SVA pair."""
+class KillReport:
+    """Mutation-kill scores for one SVA. Used by the gate and by kill-aware CEGAR."""
 
-    block: str
-    prove: VerifyResult
-    cover: VerifyResult | None
-    coi: CoiReport
     mutants: tuple[MutantOutcome, ...]
 
     @property
@@ -127,6 +123,37 @@ class GateReport:
         if not valid:
             return 0.0
         return self.killed / len(valid)
+
+    @property
+    def survivors(self) -> tuple[MutantOutcome, ...]:
+        return tuple(m for m in self.valid_mutants if not m.killed)
+
+
+@dataclass(frozen=True)
+class GateReport:
+    """Four-check gate result for one DUT + SVA pair."""
+
+    block: str
+    prove: VerifyResult
+    cover: VerifyResult | None
+    coi: CoiReport
+    mutants: tuple[MutantOutcome, ...]
+
+    @property
+    def _kill(self) -> KillReport:
+        return KillReport(self.mutants)
+
+    @property
+    def valid_mutants(self) -> tuple[MutantOutcome, ...]:
+        return self._kill.valid_mutants
+
+    @property
+    def killed(self) -> int:
+        return self._kill.killed
+
+    @property
+    def kill_rate(self) -> float:
+        return self._kill.kill_rate
 
     @property
     def vacuity_ok(self) -> bool | None:
@@ -184,6 +211,47 @@ def _sva_has_cover(sva: str) -> bool:
     return bool(re.search(r"\bcover\b", sva))
 
 
+def score_kill(
+    dut: Path,
+    sva_text: str,
+    top: str,
+    workdir: Path,
+    *,
+    max_mutants: int = 8,
+    mutants: Sequence[Mutant] | None = None,
+    extra_files: tuple[Path, ...] = (),
+    depth: int = 20,
+    timeout_s: float = 60.0,
+    clock: str = "clk",
+    mutant_root: Path | None = None,
+) -> KillReport:
+    """Run the SVA against each mutant. A FAIL is a kill; a PASS is a miss."""
+    rtl = dut.read_text(encoding="utf-8")
+    chosen = tuple(mutants) if mutants is not None else generate_mutants(rtl, max_mutants=max_mutants)
+    chosen = chosen[: max(0, max_mutants)]
+    root = mutant_root if mutant_root is not None else workdir / "mutants"
+    outcomes: list[MutantOutcome] = []
+    for mutant in chosen:
+        mutant_dir = root / mutant.name
+        mutant_dir.mkdir(parents=True, exist_ok=True)
+        mutant_dut = mutant_dir / f"{top}.sv"
+        mutant_dut.write_text(mutant.rtl, encoding="utf-8")
+        result = verify(
+            mutant_dut,
+            sva_text,
+            top,
+            mode="bmc",
+            depth=depth,
+            timeout_s=timeout_s,
+            workdir=workdir,
+            run_name=f"mutant-{mutant.name}",
+            extra_files=extra_files,
+            clock=clock,
+        )
+        outcomes.append(MutantOutcome(mutant=mutant, result=result))
+    return KillReport(mutants=tuple(outcomes))
+
+
 def evaluate(
     dut: Path,
     sva: Path | str,
@@ -234,33 +302,24 @@ def evaluate(
             clock=clock,
         )
     coi = coi_report(rtl, top, sva_text)
-    chosen = tuple(mutants) if mutants is not None else generate_mutants(rtl, max_mutants=max_mutants)
-    chosen = chosen[: max(0, max_mutants)]
-    outcomes: list[MutantOutcome] = []
-    for mutant in chosen:
-        mutant_dir = workdir / "mutants" / mutant.name
-        mutant_dir.mkdir(parents=True, exist_ok=True)
-        mutant_dut = mutant_dir / f"{top}.sv"
-        mutant_dut.write_text(mutant.rtl, encoding="utf-8")
-        result = verify(
-            mutant_dut,
-            sva_text,
-            top,
-            mode="bmc",
-            depth=depth,
-            timeout_s=timeout_s,
-            workdir=workdir,
-            run_name=f"mutant-{mutant.name}",
-            extra_files=extra_files,
-            clock=clock,
-        )
-        outcomes.append(MutantOutcome(mutant=mutant, result=result))
+    kill = score_kill(
+        dut,
+        sva_text,
+        top,
+        workdir,
+        max_mutants=max_mutants,
+        mutants=mutants,
+        extra_files=extra_files,
+        depth=depth,
+        timeout_s=timeout_s,
+        clock=clock,
+    )
     return GateReport(
         block=label,
         prove=prove,
         cover=cover_result,
         coi=coi,
-        mutants=tuple(outcomes),
+        mutants=kill.mutants,
     )
 
 

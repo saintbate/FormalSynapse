@@ -80,9 +80,10 @@ def test_generate_jobs_assertllm2_resolves_spec() -> None:
     jobs = _generate_jobs(args)
     assert jobs is not None
     assert len(jobs) == 1
-    name, dut, spec, top, extras = jobs[0]
-    assert name == "tiny_box"
-    assert dut.name == "tiny_box.sv"
-    assert spec.name == "spec.md"
-    assert top == "tiny_box"
-    assert extras == ()
+    job = jobs[0]
+    assert job.name == "tiny_box"
+    assert job.dut.name == "tiny_box.sv"
+    assert job.spec.name == "spec.md"
+    assert job.top == "tiny_box"
+    assert job.extras == ()
+    assert job.mutants is not None

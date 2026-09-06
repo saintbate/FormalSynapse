@@ -4,6 +4,7 @@ from formalsynapse.prompts import (
     SPEC_CHAR_BUDGET,
     SYSTEM_PROMPT,
     clip_prompt_text,
+    kill_miss_user,
     refinement_user,
     slot_repair_user,
     system_prompt,
@@ -82,3 +83,17 @@ def test_slot_repair_lists_kept_and_failed() -> None:
     assert "a_ok" in msg
     assert "a_bad" in msg
     assert "FAILED LABELS to replace" in msg
+
+
+def test_kill_miss_lists_survivors() -> None:
+    msg = kill_miss_user(
+        kept_sva="`ifdef FORMAL\na_clear: assert property (p_clear);\n`endif",
+        killed=2,
+        valid=8,
+        survivors=("swap clear-to-zero", "shift 1 -> 7"),
+        min_kill=0.25,
+    )
+    assert "2/8" in msg
+    assert "25%" in msg
+    assert "swap clear-to-zero" in msg
+    assert "do not copy" in msg.lower()

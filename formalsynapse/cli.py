@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from formalsynapse import __version__, toolchain
@@ -18,6 +19,7 @@ from formalsynapse.cegar import MAX_FEEDBACK, Attempt, run_block, run_suite
 from formalsynapse.dataset import log_suite, log_trajectory
 from formalsynapse.gate import GateReport, evaluate, write_report
 from formalsynapse.generator import VLLMGenerator, ping
+from formalsynapse.mutate import Mutant
 from formalsynapse.paths import default_output_dir, default_workdir, golden_dir, smoke_dir
 from formalsynapse.sby_config import Frontend, Mode
 from formalsynapse.vcd_parser import VcdError, build_report, load_vcd
@@ -31,8 +33,22 @@ def _print(msg: str) -> None:
 
 def _print_suite_attempt(name: str, att: Attempt) -> None:
     _print(f"[{name}] turn {att.turn}: {att.result.summary()}")
+    if att.valid_mutants:
+        _print(f"  kill={att.killed}/{att.valid_mutants} ({100.0 * att.kill_rate:.0f}%)")
     if att.result.status == "ERROR" and att.result.errors:
         _print(f"  {att.result.errors[0][:400]}")
+
+
+@dataclass(frozen=True)
+class GenerateJob:
+    """One generate target: golden block or AssertLLM2 design."""
+
+    name: str
+    dut: Path
+    spec: Path
+    top: str
+    extras: tuple[Path, ...] = ()
+    mutants: tuple[Mutant, ...] | None = None
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -260,10 +276,9 @@ def _add_llm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dataset", type=Path, default=default_output_dir() / "trajectories.jsonl")
 
 
-def _generate_jobs(
-    args: argparse.Namespace,
-) -> list[tuple[str, Path, Path, str, tuple[Path, ...]]] | None:
+def _generate_jobs(args: argparse.Namespace) -> list[GenerateJob] | None:
     extras = tuple(Path(p) for p in (args.extra or []))
+    max_mutants = int(getattr(args, "max_mutants", 8))
     if getattr(args, "suite", None) == "assertllm2":
         root = Path(args.root) if getattr(args, "root", None) else assertllm2_default_root()
         if root is None:
@@ -278,18 +293,19 @@ def _generate_jobs(
         if not chosen:
             _print("no open AssertLLM2 designs selected")
             return None
-        jobs: list[tuple[str, Path, Path, str, tuple[Path, ...]]] = []
+        jobs: list[GenerateJob] = []
         for design in chosen:
             if design.spec is None:
                 _print(f"[{design.key}] missing spec.md")
                 continue
             jobs.append(
-                (
-                    design.name,
-                    design.dut,
-                    design.spec,
-                    design.top,
-                    _unique_extras(design.extras + extras),
+                GenerateJob(
+                    name=design.name,
+                    dut=design.dut,
+                    spec=design.spec,
+                    top=design.top,
+                    extras=_unique_extras(design.extras + extras),
+                    mutants=load_assertllm2_mutants(design, max_mutants=max_mutants),
                 )
             )
         return jobs
@@ -305,7 +321,7 @@ def _generate_jobs(
         dut = block
         top = args.top or dut.stem
         spec = Path(args.spec) if args.spec else dut.with_name(f"{top}.spec.md")
-    return [(top, dut, spec, top, extras)]
+    return [GenerateJob(name=top, dut=dut, spec=spec, top=top, extras=extras)]
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
@@ -316,36 +332,46 @@ def cmd_generate(args: argparse.Namespace) -> int:
     if jobs is None:
         return 1
     failed = 0
-    for name, dut, spec, top, extras in jobs:
+    min_kill = float(getattr(args, "min_kill", 0.0))
+    max_mutants = int(getattr(args, "max_mutants", 8))
+    for job in jobs:
 
-        def _on_attempt(att: Attempt, block: str = name) -> None:
+        def _on_attempt(att: Attempt, block: str = job.name) -> None:
             _print_suite_attempt(block, att)
 
         traj = run_block(
-            dut_path=dut,
-            spec_path=spec,
-            top=top,
+            dut_path=job.dut,
+            spec_path=job.spec,
+            top=job.top,
             generator=_llm_from_args(args),
             workdir=Path(args.workdir),
             depth=args.depth,
             timeout_s=args.timeout,
             max_feedback=args.max_feedback,
             candidates=args.candidates,
-            extra_files=extras,
+            extra_files=job.extras,
+            min_kill=min_kill,
+            max_mutants=max_mutants,
+            mutants=job.mutants,
             on_attempt=_on_attempt,
         )
-        _print(f"{traj.block}: {traj.status} in {traj.turns} turn(s), {traj.elapsed_s:.1f}s")
+        kill_note = ""
+        last = traj.attempts[-1] if traj.attempts else None
+        if last is not None and last.valid_mutants:
+            kill_note = f", kill {last.killed}/{last.valid_mutants} ({100.0 * last.kill_rate:.0f}%)"
+        _print(f"{traj.block}: {traj.status} in {traj.turns} turn(s), {traj.elapsed_s:.1f}s{kill_note}")
         n = log_trajectory(Path(args.dataset), traj)
         if n:
-            _print(f"logged {n} heal row(s) -> {args.dataset}")
-        last_sva = traj.attempts[-1].sva if traj.attempts else ""
-        if not traj.ok:
+            _print(f"logged {n} row(s) -> {args.dataset}")
+        last_sva = last.sva if last is not None else ""
+        shallow = last is not None and not last.meets_kill(min_kill)
+        if not traj.ok or shallow:
             failed += 1
         if args.out:
             dest = Path(args.out)
             if dest.is_dir() or (len(jobs) > 1 and dest.suffix == ""):
                 dest.mkdir(parents=True, exist_ok=True)
-                dest = dest / f"{name}.sva.sv"
+                dest = dest / f"{job.name}.sva.sv"
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(last_sva)
@@ -691,6 +717,18 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--only", nargs="*", default=None, help="restrict AssertLLM2 generation to these names")
     gen.add_argument("--max-feedback", type=int, default=MAX_FEEDBACK)
     gen.add_argument("--out", type=Path, default=None, help="write the last SVA attempt here")
+    gen.add_argument(
+        "--min-kill",
+        type=float,
+        default=0.25,
+        help="keep sampling after a BMC PASS until mutation kill reaches this (default 0.25)",
+    )
+    gen.add_argument(
+        "--max-mutants",
+        type=int,
+        default=8,
+        help="mutants scored after each BMC PASS (default 8)",
+    )
     _add_llm_args(gen)
 
     base = sub.add_parser("baseline", help="zero-shot pass rate on benchmarks/golden (no CEGAR)")

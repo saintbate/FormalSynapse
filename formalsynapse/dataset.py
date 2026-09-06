@@ -39,4 +39,18 @@ def log_suite(path: Path, report: SuiteReport) -> int:
 
 
 def log_trajectory(path: Path, traj: Trajectory) -> int:
-    return append_jsonl(path, traj.dataset_rows())
+    rows = list(traj.dataset_rows())
+    last = traj.attempts[-1] if traj.attempts else None
+    rows.append(
+        {
+            "type": "trajectory",
+            "block": traj.block,
+            "status": traj.status,
+            "turns": traj.turns,
+            "ok": traj.ok,
+            "killed": last.killed if last is not None else 0,
+            "valid_mutants": last.valid_mutants if last is not None else 0,
+            "kill_rate": last.kill_rate if last is not None else None,
+        }
+    )
+    return append_jsonl(path, rows)

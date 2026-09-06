@@ -241,6 +241,92 @@ def test_extract_error_continues_cegar(tmp_path: Path, monkeypatch: pytest.Monke
     assert "no labeled assert" in gen.seen[1][2].content
 
 
+def test_min_kill_zero_skips_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+
+    def boom(*_a: object, **_k: object) -> object:
+        raise AssertionError("prove-only CEGAR must not score kill")
+
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("PASS"))
+    monkeypatch.setattr(cegar_mod, "score_kill", boom)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=Scripted([GOOD]),
+        workdir=tmp_path,
+        max_feedback=1,
+        min_kill=0.0,
+    )
+    assert traj.turns == 1
+    assert traj.first_pass
+    assert traj.attempts[0].valid_mutants == 0
+
+
+def test_shallow_pass_continues_for_kill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.gate import KillReport, MutantOutcome
+    from formalsynapse.mutate import Mutant
+
+    dummy = Mutant("m0", "eq_ne", "swap clear-to-zero", "module x; endmodule")
+    scores = [
+        KillReport((MutantOutcome(dummy, _result("PASS")), MutantOutcome(dummy, _result("PASS")))),
+        KillReport((MutantOutcome(dummy, _result("FAIL")), MutantOutcome(dummy, _result("FAIL")))),
+    ]
+
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("PASS"))
+    monkeypatch.setattr(cegar_mod, "score_kill", lambda *_a, **_k: scores.pop(0))
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    more = GOOD.replace("p_t_good", "p_t_more").replace("a_t_good", "a_t_more")
+    gen = Scripted([GOOD, more])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=1,
+        min_kill=0.5,
+        candidates=1,
+    )
+    assert traj.turns == 2
+    assert traj.attempts[0].killed == 0
+    assert traj.attempts[1].killed == 2
+    assert traj.attempts[1].meets_kill(0.5)
+    assert "unkilled mutants" in gen.seen[1][-1].content
+    assert "swap clear-to-zero" in gen.seen[1][-1].content
+
+
+def test_zero_valid_mutants_does_not_spin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.gate import KillReport
+
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("PASS"))
+    monkeypatch.setattr(cegar_mod, "score_kill", lambda *_a, **_k: KillReport(()))
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=Scripted([GOOD]),
+        workdir=tmp_path,
+        max_feedback=2,
+        min_kill=0.5,
+    )
+    assert traj.turns == 1
+    assert traj.ok
+
+
 def test_suite_metrics() -> None:
     def traj(block: str, first: str, final: str) -> Trajectory:
         a0 = Attempt(1, BAD, _result(first))

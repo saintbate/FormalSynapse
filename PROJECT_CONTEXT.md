@@ -160,6 +160,12 @@ Second rerun (8 candidates, 3 feedback turns, 23 min): turn 1–2 extract ERROR
 (25%) — both kills are the two shipped mutants that break clear-to-zero.
 Shallow but honest: the open grader no longer reports a FAIL as a kill score.
 
+Kill-aware CEGAR: `fsyn generate --min-kill` (default 0.25) scores mutation
+kill after a BMC PASS and keeps sampling, merging new properties onto the
+proven block, until the rate clears the bar or feedback turns run out.
+`fsyn cegar` / `baseline` stay prove-only (`min_kill=0`) so the golden
+first-pass / heal numbers stay comparable. A 0-mutant design does not spin.
+
 ### Weeks 5–6
 
 `fsyn` unit CI (ruff, mypy, pytest minus `toolchain`/`llm`) is in

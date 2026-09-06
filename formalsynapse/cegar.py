@@ -1,7 +1,8 @@
-"""3-turn CEGAR loop: generate SVA, grade with sby, refine from the counterexample.
+"""CEGAR loop: generate SVA, grade with sby, refine from the counterexample or unkilled mutants.
 
 Zero-shot is turn 1. Up to three solver-feedback iterations follow (spec: max 3). The LLM never
-grades itself — :func:`formalsynapse.verify_harness.verify` is the only referee.
+grades itself — :func:`formalsynapse.verify_harness.verify` is the only referee. A BMC PASS
+below ``min_kill`` is incomplete: mutation kill keeps the loop open.
 """
 
 from __future__ import annotations
@@ -13,9 +14,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from formalsynapse.design_context import extract_context
+from formalsynapse.gate import KillReport, score_kill
 from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
+from formalsynapse.mutate import Mutant
 from formalsynapse.prompts import (
     extract_fail_user,
+    kill_miss_user,
     refinement_user,
     slot_repair_user,
     system_prompt,
@@ -30,11 +34,26 @@ MAX_FEEDBACK = 3
 
 @dataclass(frozen=True)
 class Attempt:
-    """One generate → verify cycle."""
+    """One generate → verify cycle, optionally scored for mutation kill."""
 
     turn: int
     sva: str
     result: VerifyResult
+    killed: int = 0
+    valid_mutants: int = 0
+    unkilled: tuple[str, ...] = ()
+
+    @property
+    def kill_rate(self) -> float:
+        if not self.valid_mutants:
+            return 0.0
+        return self.killed / self.valid_mutants
+
+    def meets_kill(self, min_kill: float) -> bool:
+        """True when kill is not required, cannot be scored, or clears the bar."""
+        if min_kill <= 0.0 or self.valid_mutants == 0:
+            return True
+        return self.kill_rate + 1e-12 >= min_kill
 
 
 @dataclass(frozen=True)
@@ -66,6 +85,13 @@ class Trajectory:
     @property
     def turns(self) -> int:
         return len(self.attempts)
+
+    @property
+    def kill_rate(self) -> float | None:
+        for att in reversed(self.attempts):
+            if att.valid_mutants:
+                return att.kill_rate
+        return None
 
     def dataset_rows(self) -> list[dict[str, object]]:
         """``(Prompt, Faulty_Attempt, Counterexample, Fixed_Attempt)`` rows for successful heals."""
@@ -176,6 +202,18 @@ def _with_temperature(generator: Generator, value: float | None) -> Iterator[Non
             generator.temperature = old  # type: ignore[attr-defined]
 
 
+def _apply_kill(att: Attempt, kill: KillReport) -> Attempt:
+    survivors = tuple(o.mutant.description for o in kill.survivors)
+    return Attempt(
+        att.turn,
+        att.sva,
+        att.result,
+        killed=kill.killed,
+        valid_mutants=len(kill.valid_mutants),
+        unkilled=survivors,
+    )
+
+
 def run_block(
     *,
     dut_path: Path,
@@ -188,9 +226,16 @@ def run_block(
     max_feedback: int = MAX_FEEDBACK,
     candidates: int = 1,
     extra_files: tuple[Path, ...] = (),
+    min_kill: float = 0.0,
+    max_mutants: int = 8,
+    mutants: Sequence[Mutant] | None = None,
     on_attempt: Callable[[Attempt], None] | None = None,
 ) -> Trajectory:
-    """Zero-shot + up to ``max_feedback`` repairs. ``candidates`` is sby-graded best-of-N."""
+    """Zero-shot + up to ``max_feedback`` repairs. ``candidates`` is sby-graded best-of-N.
+
+    After a BMC PASS, ``min_kill > 0`` scores mutation kill and keeps sampling if
+    the rate is below the bar. ``min_kill == 0`` is prove-only (legacy CEGAR).
+    """
     started = time.monotonic()
     rtl = dut_path.read_text()
     spec = spec_path.read_text() if spec_path.is_file() else ""
@@ -253,11 +298,44 @@ def run_block(
             if result.ok:
                 break
         assert best is not None
+        if best.result.ok and min_kill > 0.0:
+            kill = score_kill(
+                dut_path,
+                best.sva,
+                top,
+                workdir,
+                max_mutants=max_mutants,
+                mutants=mutants,
+                extra_files=extra_files,
+                depth=depth,
+                timeout_s=timeout_s,
+                clock=ctx.clock or "clk",
+                mutant_root=workdir / f"cegar-{top}-{turn}-kill",
+            )
+            best = _apply_kill(best, kill)
         attempts.append(best)
         if on_attempt is not None:
             on_attempt(best)
-        if best.result.ok or turn == max_turns:
+        if turn == max_turns:
             break
+        if best.result.ok:
+            if best.meets_kill(min_kill):
+                break
+            kept = best.sva
+            messages.append(Message("assistant", best.sva))
+            messages.append(
+                Message(
+                    "user",
+                    kill_miss_user(
+                        kept_sva=best.sva,
+                        killed=best.killed,
+                        valid=best.valid_mutants,
+                        survivors=best.unkilled,
+                        min_kill=min_kill,
+                    ),
+                )
+            )
+            continue
         failed = best.result.failed_assertions
         kept = strip_labels(best.sva, failed) if failed else ""
         repeated = len(attempts) >= 2 and set(failed) == set(attempts[-2].result.failed_assertions)
@@ -297,6 +375,8 @@ def run_suite(
     timeout_s: float = 300.0,
     max_feedback: int = MAX_FEEDBACK,
     candidates: int = 1,
+    min_kill: float = 0.0,
+    max_mutants: int = 8,
     on_attempt: Callable[[str, Attempt], None] | None = None,
 ) -> SuiteReport:
     """Run :func:`run_block` over every golden directory in ``blocks``."""
@@ -323,6 +403,8 @@ def run_suite(
                 timeout_s=timeout_s,
                 max_feedback=max_feedback,
                 candidates=candidates,
+                min_kill=min_kill,
+                max_mutants=max_mutants,
                 on_attempt=_hook,
             )
         )

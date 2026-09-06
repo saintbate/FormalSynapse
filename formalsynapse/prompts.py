@@ -140,6 +140,31 @@ def extract_fail_user(*, report: str) -> str:
     )
 
 
+def kill_miss_user(
+    *,
+    kept_sva: str,
+    killed: int,
+    valid: int,
+    survivors: tuple[str, ...],
+    min_kill: float,
+) -> str:
+    """User message after a BMC PASS that missed too many mutants."""
+    kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA")
+    rate = (killed / valid) if valid else 0.0
+    listed = "\n".join(f"- {item}" for item in survivors[:12])
+    listed = clip_prompt_text(listed, REPORT_CHAR_BUDGET, label="unkilled mutants")
+    return (
+        f"BMC proved the block, but mutation kill is {killed}/{valid} ({rate:.0%}); "
+        f"the gate needs at least {min_kill:.0%}.\n"
+        "These mutants still PASS the SVA — they are real bugs the assertions missed.\n"
+        "Keep the existing properties. Emit ONLY new properties (and covers) that would "
+        "FAIL on the unkilled mutants. New antecedents from the DUT. You may go past 6 "
+        "properties if needed; finish every one.\n\n"
+        f"## Kept (already proven; do not copy these back)\n```systemverilog\n{kept}\n```\n\n"
+        f"## Unkilled mutants\n{listed}\n"
+    )
+
+
 def slot_repair_user(
     *,
     kept_sva: str,
