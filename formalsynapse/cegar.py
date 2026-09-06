@@ -18,6 +18,7 @@ from formalsynapse.gate import KillReport, score_kill
 from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
 from formalsynapse.mutate import Mutant
 from formalsynapse.prompts import (
+    cover_only_user,
     extract_fail_user,
     kill_miss_user,
     refinement_user,
@@ -25,7 +26,7 @@ from formalsynapse.prompts import (
     system_prompt,
     zero_shot_user,
 )
-from formalsynapse.sva_edit import merge_sva, strip_labels, unwrap_formal
+from formalsynapse.sva_edit import has_assert, merge_sva, strip_labels, unwrap_formal
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.verify_harness import VerifyResult, verify
 
@@ -49,9 +50,18 @@ class Attempt:
             return 0.0
         return self.killed / self.valid_mutants
 
+    @property
+    def proven(self) -> bool:
+        """BMC PASS with at least one labeled assert/assume. Covers alone are not a prove."""
+        return self.result.ok and has_assert(self.sva)
+
     def meets_kill(self, min_kill: float) -> bool:
         """True when kill is not required, cannot be scored, or clears the bar."""
-        if min_kill <= 0.0 or self.valid_mutants == 0:
+        if min_kill <= 0.0:
+            return True
+        if not self.proven:
+            return False
+        if self.valid_mutants == 0:
             return True
         return self.kill_rate + 1e-12 >= min_kill
 
@@ -67,12 +77,21 @@ class Trajectory:
     elapsed_s: float
 
     @property
+    def winner(self) -> Attempt | None:
+        """Best attempt: proven + highest kill, then cover-only PASS, then last FAIL."""
+        if not self.attempts:
+            return None
+        return min(self.attempts, key=_winner_key)
+
+    @property
     def status(self) -> str:
-        return self.attempts[-1].result.status if self.attempts else "ERROR"
+        chosen = self.winner
+        return chosen.result.status if chosen is not None else "ERROR"
 
     @property
     def ok(self) -> bool:
-        return bool(self.attempts) and self.attempts[-1].result.ok
+        chosen = self.winner
+        return chosen is not None and chosen.result.ok
 
     @property
     def first_pass(self) -> bool:
@@ -98,7 +117,8 @@ class Trajectory:
         if not self.healed:
             return []
         rows: list[dict[str, object]] = []
-        final = self.attempts[-1].sva
+        chosen = self.winner
+        final = chosen.sva if chosen is not None else self.attempts[-1].sva
         for att in self.attempts[:-1]:
             if att.result.ok:
                 continue
@@ -177,6 +197,17 @@ class SuiteReport:
 
 def _count(items: Sequence[Trajectory], pred: Callable[[Trajectory], bool]) -> int:
     return sum(1 for t in items if pred(t))
+
+
+def _winner_key(att: Attempt) -> tuple[int, int, int, int]:
+    """Lower is better. A later FAIL must not beat an earlier prove."""
+    if att.proven:
+        return (0, -att.killed, -att.valid_mutants, att.turn)
+    if att.result.ok:
+        return (1, 0, 0, att.turn)
+    if att.result.status == "FAIL":
+        return (2, len(att.result.failed_assertions), att.turn, att.turn)
+    return (3, 99, 0, att.turn)
 
 
 def _rank(result: VerifyResult) -> tuple[int, int, int]:
@@ -298,7 +329,7 @@ def run_block(
             if result.ok:
                 break
         assert best is not None
-        if best.result.ok and min_kill > 0.0:
+        if best.proven and min_kill > 0.0:
             kill = score_kill(
                 dut_path,
                 best.sva,
@@ -323,18 +354,17 @@ def run_block(
                 break
             kept = best.sva
             messages.append(Message("assistant", best.sva))
-            messages.append(
-                Message(
-                    "user",
-                    kill_miss_user(
-                        kept_sva=best.sva,
-                        killed=best.killed,
-                        valid=best.valid_mutants,
-                        survivors=best.unkilled,
-                        min_kill=min_kill,
-                    ),
+            if not best.proven:
+                repair = cover_only_user(kept_sva=best.sva)
+            else:
+                repair = kill_miss_user(
+                    kept_sva=best.sva,
+                    killed=best.killed,
+                    valid=best.valid_mutants,
+                    survivors=best.unkilled,
+                    min_kill=min_kill,
                 )
-            )
+            messages.append(Message("user", repair))
             continue
         failed = best.result.failed_assertions
         kept = strip_labels(best.sva, failed) if failed else ""

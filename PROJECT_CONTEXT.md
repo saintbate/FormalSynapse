@@ -166,6 +166,16 @@ proven block, until the rate clears the bar or feedback turns run out.
 `fsyn cegar` / `baseline` stay prove-only (`min_kill=0`) so the golden
 first-pass / heal numbers stay comparable. A 0-mutant design does not spin.
 
+First kill-aware generate on `versatile_counter` (`--min-kill 0.5`, 8×4,
+`--max-tokens 2048`, 63 min): turn 1 BMC PASS with two covers only, kill 0/8;
+the loop stayed open. Turn 2 extract ERROR (`<think>`). Turn 3 lowering
+ERROR. Turn 4 FAIL (`a_clear_priority_m0003` encoded the mutant, not the
+golden). `--out` now writes the winning attempt (highest prove+kill), not the last
+turn. A cover-only BMC PASS is incomplete: CEGAR does not score kill on it
+and asks for labeled asserts before treating the block as proven. Did not
+clear 50% kill. The gate as a filter is working; the model is not yet
+writing killing properties from mutant descriptions.
+
 ### Weeks 5–6
 
 `fsyn` unit CI (ruff, mypy, pytest minus `toolchain`/`llm`) is in

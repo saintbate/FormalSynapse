@@ -355,17 +355,19 @@ def cmd_generate(args: argparse.Namespace) -> int:
             mutants=job.mutants,
             on_attempt=_on_attempt,
         )
+        chosen = traj.winner
         kill_note = ""
-        last = traj.attempts[-1] if traj.attempts else None
-        if last is not None and last.valid_mutants:
-            kill_note = f", kill {last.killed}/{last.valid_mutants} ({100.0 * last.kill_rate:.0f}%)"
+        if chosen is not None and chosen.valid_mutants:
+            kill_note = f", kill {chosen.killed}/{chosen.valid_mutants} ({100.0 * chosen.kill_rate:.0f}%)"
+        if chosen is not None and chosen.turn != traj.turns:
+            kill_note += f" (kept turn {chosen.turn})"
         _print(f"{traj.block}: {traj.status} in {traj.turns} turn(s), {traj.elapsed_s:.1f}s{kill_note}")
         n = log_trajectory(Path(args.dataset), traj)
         if n:
             _print(f"logged {n} row(s) -> {args.dataset}")
-        last_sva = last.sva if last is not None else ""
-        shallow = last is not None and not last.meets_kill(min_kill)
-        if not traj.ok or shallow:
+        last_sva = chosen.sva if chosen is not None else ""
+        shallow = chosen is not None and not chosen.meets_kill(min_kill)
+        if not traj.ok or shallow or (min_kill > 0.0 and chosen is not None and not chosen.proven):
             failed += 1
         if args.out:
             dest = Path(args.out)

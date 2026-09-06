@@ -327,6 +327,89 @@ def test_zero_valid_mutants_does_not_spin(tmp_path: Path, monkeypatch: pytest.Mo
     assert traj.ok
 
 
+COVERS = """\
+`ifdef FORMAL
+c_t_en: cover property (@(posedge clk) disable iff (!rst_n) en);
+`endif
+"""
+
+
+def test_cover_only_pass_continues_without_scoring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.gate import KillReport, MutantOutcome
+    from formalsynapse.mutate import Mutant
+
+    scored = {"n": 0}
+    dummy = Mutant("m0", "eq_ne", "swap", "module x; endmodule")
+
+    def fake_kill(*_a: object, **_k: object) -> KillReport:
+        scored["n"] += 1
+        return KillReport((MutantOutcome(dummy, _result("FAIL")), MutantOutcome(dummy, _result("FAIL"))))
+
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("PASS"))
+    monkeypatch.setattr(cegar_mod, "score_kill", fake_kill)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    gen = Scripted([COVERS, GOOD])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=1,
+        min_kill=0.5,
+        candidates=1,
+    )
+    assert traj.turns == 2
+    assert not traj.attempts[0].proven
+    assert scored["n"] == 1
+    assert traj.winner is not None
+    assert traj.winner.proven
+    assert "a_t_good" in traj.winner.sva
+    assert "covers and no labeled assert" in gen.seen[1][-1].content
+
+
+def test_later_fail_keeps_earlier_prove(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.gate import KillReport, MutantOutcome
+    from formalsynapse.mutate import Mutant
+
+    dummy = Mutant("m0", "eq_ne", "swap clear-to-zero", "module x; endmodule")
+    kill = KillReport((MutantOutcome(dummy, _result("FAIL")), MutantOutcome(dummy, _result("PASS"))))
+    statuses = ["PASS", "FAIL"]
+
+    def fake_verify(*_a: object, **_k: object) -> VerifyResult:
+        return _result(statuses.pop(0) if statuses else "FAIL")
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify)
+    monkeypatch.setattr(cegar_mod, "score_kill", lambda *_a, **_k: kill)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=Scripted([GOOD, BAD]),
+        workdir=tmp_path,
+        max_feedback=1,
+        min_kill=0.75,
+        candidates=1,
+    )
+    assert traj.turns == 2
+    assert traj.ok
+    assert traj.winner is not None
+    assert traj.winner.turn == 1
+    assert traj.winner.sva == GOOD
+    assert traj.status == "PASS"
+
+
 def test_suite_metrics() -> None:
     def traj(block: str, first: str, final: str) -> Trajectory:
         a0 = Attempt(1, BAD, _result(first))

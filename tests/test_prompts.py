@@ -4,6 +4,7 @@ from formalsynapse.prompts import (
     SPEC_CHAR_BUDGET,
     SYSTEM_PROMPT,
     clip_prompt_text,
+    cover_only_user,
     kill_miss_user,
     refinement_user,
     slot_repair_user,
@@ -97,3 +98,10 @@ def test_kill_miss_lists_survivors() -> None:
     assert "25%" in msg
     assert "swap clear-to-zero" in msg
     assert "do not copy" in msg.lower()
+
+
+def test_cover_only_asks_for_asserts() -> None:
+    msg = cover_only_user(kept_sva="`ifdef FORMAL\nc_en: cover property (en);\n`endif")
+    assert "c_en" in msg
+    assert "no labeled assert" in msg
+    assert "assert" in msg.lower()

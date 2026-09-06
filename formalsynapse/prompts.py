@@ -140,6 +140,18 @@ def extract_fail_user(*, report: str) -> str:
     )
 
 
+def cover_only_user(*, kept_sva: str) -> str:
+    """User message after a BMC PASS that contained covers and no assert/assume."""
+    kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA")
+    return (
+        "BMC passed because the block had covers and no labeled assert/assume.\n"
+        "Covers do not prove a requirement and cannot kill mutants.\n"
+        "Keep the covers. Emit ONLY new labeled assert properties for the numbered "
+        "requirements. Every property needs a matching assert, not just a cover.\n\n"
+        f"## Kept (covers only; do not copy these back)\n```systemverilog\n{kept}\n```\n"
+    )
+
+
 def kill_miss_user(
     *,
     kept_sva: str,

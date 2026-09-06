@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from formalsynapse.sva_edit import merge_sva, strip_labels, unwrap_formal, wrap_formal
+from formalsynapse.sva_edit import has_assert, merge_sva, strip_labels, unwrap_formal, wrap_formal
 
 TWO = """\
 `ifdef FORMAL
@@ -41,3 +41,8 @@ def test_merge_and_wrap() -> None:
     assert "a_keep" in merged
     assert "a_new" in merged
     assert merged.count("`ifdef FORMAL") == 1
+
+
+def test_has_assert_ignores_covers() -> None:
+    assert has_assert(TWO)
+    assert not has_assert("`ifdef FORMAL\nc_en: cover property (en);\n`endif")

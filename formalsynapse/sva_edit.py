@@ -21,6 +21,14 @@ _PROP_REF = re.compile(
 )
 
 
+def has_assert(sva: str) -> bool:
+    """True when the block has a labeled assert or assume. Covers alone do not count."""
+    for match in _LABELED.finditer(sva):
+        if match.group("kind").lower() in {"assert", "assume"}:
+            return True
+    return False
+
+
 def unwrap_formal(block: str) -> str:
     """Return the inside of ```ifdef FORMAL ... `endif`` if present."""
     text = block.strip()
