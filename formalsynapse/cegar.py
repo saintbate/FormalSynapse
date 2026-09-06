@@ -21,6 +21,7 @@ from formalsynapse.prompts import (
     cover_only_user,
     extract_fail_user,
     kill_miss_user,
+    kill_unscored_user,
     refinement_user,
     slot_repair_user,
     system_prompt,
@@ -42,6 +43,7 @@ class Attempt:
     result: VerifyResult
     killed: int = 0
     valid_mutants: int = 0
+    attempted_mutants: int = 0
     unkilled: tuple[MutantHunk, ...] = ()
 
     @property
@@ -61,8 +63,10 @@ class Attempt:
             return True
         if not self.proven:
             return False
-        if self.valid_mutants == 0:
+        if self.attempted_mutants == 0:
             return True
+        if self.valid_mutants == 0:
+            return False
         return self.kill_rate + 1e-12 >= min_kill
 
 
@@ -248,6 +252,7 @@ def _apply_kill(att: Attempt, kill: KillReport, *, golden_rtl: str) -> Attempt:
         att.result,
         killed=kill.killed,
         valid_mutants=len(kill.valid_mutants),
+        attempted_mutants=len(kill.mutants),
         unkilled=hunks,
     )
 
@@ -363,6 +368,11 @@ def run_block(
             messages.append(Message("assistant", best.sva))
             if not best.proven:
                 repair = cover_only_user(kept_sva=best.sva)
+            elif best.valid_mutants == 0:
+                repair = kill_unscored_user(
+                    kept_sva=best.sva,
+                    attempted=best.attempted_mutants,
+                )
             else:
                 repair = kill_miss_user(
                     kept_sva=best.sva,

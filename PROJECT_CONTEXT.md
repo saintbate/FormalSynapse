@@ -179,6 +179,19 @@ now shows a golden-minus / mutant-plus hunk and tells the model to
 assert the golden side — the previous wording ("fail on these mutants")
 made CodeV encode the bug (`q_next == 1`).
 
+Third generate (`--min-kill 0.5`, golden-vs-mutant prompt, 46 min): turn 1
+FAIL `a_non_clear_priority` (`qi - 1` width); turn 2 extract ERROR; turn 3
+PASS with `clear |-> q_next == 0` and `!clear |-> q_next == (qi - \`CNT_LENGTH'd1)`.
+Gate prove PASS, but all 8 shipped mutants ERROR — the SVA still names
+`CNT_LENGTH`, which the mutant copies do not define. Generate exited 0
+because zero valid mutants currently counted as meeting `--min-kill`.
+The lowerer now expands `` `define `` from the DUT/includes (so
+`` `CNT_LENGTH'd1 `` becomes ``4'd1``) and rejects leftover macros.
+`--min-kill > 0` treats “mutants exist but none scored” as incomplete.
+Re-gating that same SVA after the expand: prove PASS, kill 3/8 (38%) —
+clear-swap, clear-to-1, and rewind decrement. Below the 50% bar, but
+honest and better than the 25% one-property block.
+
 ### Weeks 5–6
 
 `fsyn` unit CI (ruff, mypy, pytest minus `toolchain`/`llm`) is in

@@ -240,3 +240,24 @@ a_bad: assert property (p_bad);
     assert "a_ok" in result.names
     assert "a_bad" not in result.names
     assert "eventually" in result.verilog  # mentioned in skip comment
+
+
+def test_lower_expands_width_macro() -> None:
+    text = """
+property p_dec;
+    @(posedge clk) disable iff (rst)
+    !clear |-> q_next == (qi - `CNT_LENGTH'd1);
+endproperty
+a_dec: assert property (p_dec);
+"""
+    result = lower(text, defines={"CNT_LENGTH": "4"})
+    assert "`CNT_LENGTH" not in result.verilog
+    assert "4'd1" in result.verilog
+
+
+def test_lower_rejects_unknown_macro() -> None:
+    text = """
+a_dec: assert property (@(posedge clk) disable iff (rst) clear |-> q_next == `CNT_LENGTH'd0);
+"""
+    with pytest.raises(LowerError, match="undefined macros"):
+        lower(text)

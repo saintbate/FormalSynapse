@@ -7,6 +7,7 @@ from formalsynapse.prompts import (
     clip_prompt_text,
     cover_only_user,
     kill_miss_user,
+    kill_unscored_user,
     refinement_user,
     slot_repair_user,
     system_prompt,
@@ -110,6 +111,16 @@ def test_kill_miss_lists_survivors() -> None:
     assert "assert the golden" in msg.lower()
     assert "not `== 1`" in msg or "not == 1" in msg
     assert "do not copy" in msg.lower()
+
+
+def test_kill_unscored_asks_for_literals() -> None:
+    msg = kill_unscored_user(
+        kept_sva="`ifdef FORMAL\na_dec: assert property (p_dec);\n`endif",
+        attempted=8,
+    )
+    assert "8 mutants ERROR" in msg
+    assert "4'd1" in msg
+    assert "CNT_LENGTH" in msg
 
 
 def test_cover_only_asks_for_asserts() -> None:

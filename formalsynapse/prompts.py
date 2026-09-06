@@ -154,6 +154,19 @@ def cover_only_user(*, kept_sva: str) -> str:
     )
 
 
+def kill_unscored_user(*, kept_sva: str, attempted: int) -> str:
+    """User message when every mutant ERROR'd, so kill cannot be scored."""
+    kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA")
+    return (
+        f"BMC proved the block, but all {attempted} mutants ERROR'd — none scored.\n"
+        "That usually means the SVA still contains `macros (`CNT_LENGTH'd1). "
+        "Mutant copies do not define those macros.\n"
+        "Keep the properties. Rewrite every `MACRO as a sized literal "
+        "(4'd1, not `CNT_LENGTH'd1). No compiler directives in the block.\n\n"
+        f"## Kept (already proven; do not copy these back)\n```systemverilog\n{kept}\n```\n"
+    )
+
+
 def kill_miss_user(
     *,
     kept_sva: str,

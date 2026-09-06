@@ -58,10 +58,37 @@ and is not parsed as SVA.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
 Kind = Literal["assert", "assume", "cover"]
+
+_DIRECTIVE = frozenset(
+    {
+        "begin_keywords",
+        "celldefine",
+        "default_nettype",
+        "define",
+        "else",
+        "elsif",
+        "end_keywords",
+        "endcelldefine",
+        "endif",
+        "ifdef",
+        "ifndef",
+        "include",
+        "line",
+        "nounconnected_drive",
+        "pragma",
+        "resetall",
+        "timescale",
+        "unconnected_drive",
+        "undef",
+    }
+)
+_DEFINE = re.compile(r"(?m)^\s*`define\s+([A-Za-z_]\w*)(?!\()(?:[ \t]+(\S.*?))?\s*$")
+_MACRO = re.compile(r"`([A-Za-z_]\w*)")
 
 _COUNTER = "f_fsyn_cycles"
 _COUNTER_WIDTH = 8
@@ -70,6 +97,45 @@ _COUNTER_MAX = (1 << _COUNTER_WIDTH) - 1
 
 class LowerError(ValueError):
     """Raised when the SVA text is outside the supported subset or malformed."""
+
+
+def collect_defines(*texts: str) -> dict[str, str]:
+    """Parse `` `define NAME value `` from DUT / include files. Flag-only defines are skipped."""
+    defs: dict[str, str] = {}
+    for text in texts:
+        for match in _DEFINE.finditer(text):
+            name = match.group(1)
+            raw = (match.group(2) or "").strip()
+            value = re.split(r"//", raw, maxsplit=1)[0].strip()
+            if value:
+                defs[name] = value
+    return defs
+
+
+def expand_macros(text: str, defines: Mapping[str, str]) -> str:
+    """Replace `` `NAME `` with its define. Directives (`` `ifdef ``) are left alone."""
+    for _ in range(8):
+        def _repl(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name in _DIRECTIVE or name not in defines:
+                return match.group(0)
+            return defines[name]
+
+        nxt = _MACRO.sub(_repl, text)
+        if nxt == text:
+            break
+        text = nxt
+    return text
+
+
+def leftover_macros(text: str) -> tuple[str, ...]:
+    """`` `NAME `` tokens that are not preprocessor directives."""
+    found: list[str] = []
+    for match in _MACRO.finditer(text):
+        name = match.group(1)
+        if name not in _DIRECTIVE and name not in found:
+            found.append(name)
+    return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -716,12 +782,22 @@ def _lower_statement(stmt: Statement, prop: Property, out: list[str]) -> list[Lo
     return produced
 
 
-def lower(sva_text: str) -> LoweredSVA:
+def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> LoweredSVA:
     """Lower an SVA block to Yosys-compatible immediate assertions.
 
-    Raises :class:`LowerError` on unsupported or malformed input.
+    ``defines`` expands `` `CNT_LENGTH'd1 `` to ``4'd1`` so mutant copies
+    do not need the include file. Leftover macros raise :class:`LowerError`.
     """
     text = _unwrap_ifdef(sva_text)
+    if defines:
+        text = expand_macros(text, defines)
+    leftover = leftover_macros(text)
+    if leftover:
+        names = ", ".join(f"`{n}" for n in leftover)
+        raise LowerError(
+            f"SVA uses undefined macros {names}; write sized literals (4'd1) "
+            "instead of `CNT_LENGTH'd1"
+        )
     text, verbatim = _extract_verbatim(text)
     text = strip_comments(text)
     text, decls = _extract_simple_decls(text)

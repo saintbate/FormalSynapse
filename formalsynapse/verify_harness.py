@@ -27,7 +27,7 @@ from typing import Literal
 from formalsynapse import toolchain
 from formalsynapse.sby_config import Frontend, Mode, SbyConfig, SbyTask
 from formalsynapse.sva_inject import InjectError, inject_clean
-from formalsynapse.sva_lower import LoweredSVA, LowerError, lower
+from formalsynapse.sva_lower import LoweredSVA, LowerError, collect_defines, lower
 from formalsynapse.vcd_parser import CounterexampleReport, build_report, load_vcd
 
 Status = Literal["PASS", "FAIL", "ERROR", "TIMEOUT", "UNKNOWN"]
@@ -131,9 +131,14 @@ def prepare_sources(
     Raises :class:`LowerError` or :class:`InjectError`.
     """
     dut_text = dut_path.read_text()
+    extra_texts = [
+        extra.read_text(encoding="utf-8", errors="replace")
+        for extra in extra_files
+        if extra.is_file()
+    ]
     lowered: LoweredSVA | None = None
     if frontend == "verilog":
-        lowered = lower(sva_text)
+        lowered = lower(sva_text, defines=collect_defines(dut_text, *extra_texts))
         block = lowered.verilog
     else:
         block = sva_text

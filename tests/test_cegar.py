@@ -327,6 +327,38 @@ def test_zero_valid_mutants_does_not_spin(tmp_path: Path, monkeypatch: pytest.Mo
     )
     assert traj.turns == 1
     assert traj.ok
+    assert traj.attempts[0].meets_kill(0.5)
+
+
+def test_all_error_mutants_do_not_meet_kill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.gate import KillReport, MutantOutcome
+    from formalsynapse.mutate import Mutant
+
+    dummy = Mutant("m0", "eq_ne", "swap", "module x; endmodule")
+    errors = KillReport((MutantOutcome(dummy, _result("ERROR")), MutantOutcome(dummy, _result("ERROR"))))
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("PASS"))
+    monkeypatch.setattr(cegar_mod, "score_kill", lambda *_a, **_k: errors)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    gen = Scripted([GOOD, GOOD])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=1,
+        min_kill=0.5,
+        candidates=1,
+    )
+    assert traj.turns == 2
+    assert traj.attempts[0].attempted_mutants == 2
+    assert traj.attempts[0].valid_mutants == 0
+    assert not traj.attempts[0].meets_kill(0.5)
+    assert "mutants ERROR" in gen.seen[1][-1].content
 
 
 COVERS = """\
