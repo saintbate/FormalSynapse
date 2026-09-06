@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
+from formalsynapse.mutate import MutantHunk
 from formalsynapse.sva_inject import strip_formal_blocks
 
 SPEC_CHAR_BUDGET = 4000
@@ -157,23 +159,34 @@ def kill_miss_user(
     kept_sva: str,
     killed: int,
     valid: int,
-    survivors: tuple[str, ...],
+    survivors: Sequence[MutantHunk],
     min_kill: float,
 ) -> str:
-    """User message after a BMC PASS that missed too many mutants."""
+    """User message after a BMC PASS that missed too many mutants.
+
+    Hunks are golden-minus / mutant-plus. The model must assert the golden
+    side; encoding a ``+`` line as the consequent will FAIL on golden RTL.
+    """
     kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA")
     rate = (killed / valid) if valid else 0.0
-    listed = "\n".join(f"- {item}" for item in survivors[:12])
-    listed = clip_prompt_text(listed, REPORT_CHAR_BUDGET, label="unkilled mutants")
+    parts: list[str] = []
+    for hunk in survivors[:6]:
+        block = f"### {hunk.name}\n{hunk.description}\n"
+        if hunk.diff:
+            block += f"```diff\n{hunk.diff}\n```\n"
+        parts.append(block)
+    listed = clip_prompt_text("\n".join(parts), REPORT_CHAR_BUDGET, label="unkilled mutants")
     return (
         f"BMC proved the block, but mutation kill is {killed}/{valid} ({rate:.0%}); "
         f"the gate needs at least {min_kill:.0%}.\n"
-        "These mutants still PASS the SVA — they are real bugs the assertions missed.\n"
-        "Keep the existing properties. Emit ONLY new properties (and covers) that would "
-        "FAIL on the unkilled mutants. New antecedents from the DUT. You may go past 6 "
-        "properties if needed; finish every one.\n\n"
+        "Each hunk is a bug. Lines starting with `-` are GOLDEN RTL; `+` is the mutant.\n"
+        "Assert the golden behavior. Never write a consequent that matches a `+` line.\n"
+        "Example: golden `clear ? 0 : qi - 1` → `clear |-> q_next == 0`, not `== 1`.\n"
+        "Keep the existing properties. Emit ONLY new assert properties (and covers) "
+        "for the golden behaviors these hunks broke. You may go past 6 properties; "
+        "finish every one.\n\n"
         f"## Kept (already proven; do not copy these back)\n```systemverilog\n{kept}\n```\n\n"
-        f"## Unkilled mutants\n{listed}\n"
+        f"## Unkilled mutants (assert golden, not the + lines)\n{listed}\n"
     )
 
 

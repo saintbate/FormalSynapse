@@ -174,7 +174,10 @@ golden). `--out` now writes the winning attempt (highest prove+kill), not the la
 turn. A cover-only BMC PASS is incomplete: CEGAR does not score kill on it
 and asks for labeled asserts before treating the block as proven. Did not
 clear 50% kill. The gate as a filter is working; the model is not yet
-writing killing properties from mutant descriptions.
+writing killing properties from mutant descriptions. `kill_miss_user`
+now shows a golden-minus / mutant-plus hunk and tells the model to
+assert the golden side — the previous wording ("fail on these mutants")
+made CodeV encode the bug (`q_next == 1`).
 
 ### Weeks 5–6
 

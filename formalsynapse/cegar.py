@@ -16,7 +16,7 @@ from pathlib import Path
 from formalsynapse.design_context import extract_context
 from formalsynapse.gate import KillReport, score_kill
 from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
-from formalsynapse.mutate import Mutant
+from formalsynapse.mutate import Mutant, MutantHunk, rtl_hunk
 from formalsynapse.prompts import (
     cover_only_user,
     extract_fail_user,
@@ -42,7 +42,7 @@ class Attempt:
     result: VerifyResult
     killed: int = 0
     valid_mutants: int = 0
-    unkilled: tuple[str, ...] = ()
+    unkilled: tuple[MutantHunk, ...] = ()
 
     @property
     def kill_rate(self) -> float:
@@ -233,15 +233,22 @@ def _with_temperature(generator: Generator, value: float | None) -> Iterator[Non
             generator.temperature = old  # type: ignore[attr-defined]
 
 
-def _apply_kill(att: Attempt, kill: KillReport) -> Attempt:
-    survivors = tuple(o.mutant.description for o in kill.survivors)
+def _apply_kill(att: Attempt, kill: KillReport, *, golden_rtl: str) -> Attempt:
+    hunks = tuple(
+        MutantHunk(
+            name=o.mutant.name,
+            description=o.mutant.description,
+            diff=rtl_hunk(golden_rtl, o.mutant.rtl),
+        )
+        for o in kill.survivors
+    )
     return Attempt(
         att.turn,
         att.sva,
         att.result,
         killed=kill.killed,
         valid_mutants=len(kill.valid_mutants),
-        unkilled=survivors,
+        unkilled=hunks,
     )
 
 
@@ -343,7 +350,7 @@ def run_block(
                 clock=ctx.clock or "clk",
                 mutant_root=workdir / f"cegar-{top}-{turn}-kill",
             )
-            best = _apply_kill(best, kill)
+            best = _apply_kill(best, kill, golden_rtl=clean_rtl)
         attempts.append(best)
         if on_attempt is not None:
             on_attempt(best)

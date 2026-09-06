@@ -11,6 +11,7 @@ pairs, binary ``+``/``-``, and simple ``if (ident)`` polarity flips.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 
@@ -45,6 +46,41 @@ class Mutant:
     operator: str
     description: str
     rtl: str
+
+
+@dataclass(frozen=True)
+class MutantHunk:
+    """Compact golden-vs-mutant snippet for a kill-miss prompt."""
+
+    name: str
+    description: str
+    diff: str
+
+
+def rtl_hunk(
+    golden: str,
+    mutant: str,
+    *,
+    context: int = 1,
+    max_lines: int = 12,
+) -> str:
+    """Unified diff of the first changed site. ``-`` is golden, ``+`` is the bug."""
+    if golden == mutant:
+        return ""
+    lines = list(
+        difflib.unified_diff(
+            golden.splitlines(),
+            mutant.splitlines(),
+            fromfile="golden",
+            tofile="mutant",
+            lineterm="",
+            n=context,
+        )
+    )
+    body = [ln for ln in lines if not ln.startswith(("---", "+++"))]
+    if len(body) > 40:
+        return ""
+    return "\n".join(body[: max(0, max_lines)])
 
 
 def _blank_comments(text: str) -> str:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from formalsynapse.mutate import generate_mutants
+from formalsynapse.mutate import generate_mutants, rtl_hunk
 
 COUNTER = """\
 module counter (
@@ -111,3 +111,13 @@ def test_does_not_mutate_comments() -> None:
     # The extra comment line is not a new add site (body already has one +).
     adds = [m for m in mutants if m.operator == "add_sub"]
     assert len(adds) == 1
+
+
+def test_rtl_hunk_marks_golden_minus_and_mutant_plus() -> None:
+    golden = "assign q_next = clear ? 4'd0 : qi - 4'd1;\n"
+    mutant = "assign q_next = clear ? 4'd1 : qi - 4'd1;\n"
+    hunk = rtl_hunk(golden, mutant)
+    assert hunk.startswith("@@")
+    assert "-assign q_next = clear ? 4'd0 : qi - 4'd1;" in hunk
+    assert "+assign q_next = clear ? 4'd1 : qi - 4'd1;" in hunk
+    assert rtl_hunk(golden, golden) == ""

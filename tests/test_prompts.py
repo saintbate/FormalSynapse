@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from formalsynapse.mutate import MutantHunk
 from formalsynapse.prompts import (
     SPEC_CHAR_BUDGET,
     SYSTEM_PROMPT,
@@ -91,12 +92,23 @@ def test_kill_miss_lists_survivors() -> None:
         kept_sva="`ifdef FORMAL\na_clear: assert property (p_clear);\n`endif",
         killed=2,
         valid=8,
-        survivors=("swap clear-to-zero", "shift 1 -> 7"),
+        survivors=(
+            MutantHunk(
+                "M_0003",
+                "clear 0 -> 1",
+                "@@\n- assign q_next_fw = clear ? 4'd0 : qi - 4'd1;\n"
+                "+ assign q_next_fw = clear ? 4'd1 : qi - 4'd1;",
+            ),
+            MutantHunk("M_0001", "shift 1 -> 7", ""),
+        ),
         min_kill=0.25,
     )
     assert "2/8" in msg
     assert "25%" in msg
-    assert "swap clear-to-zero" in msg
+    assert "clear 0 -> 1" in msg
+    assert "4'd0" in msg
+    assert "assert the golden" in msg.lower()
+    assert "not `== 1`" in msg or "not == 1" in msg
     assert "do not copy" in msg.lower()
 
 

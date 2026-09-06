@@ -300,8 +300,10 @@ def test_shallow_pass_continues_for_kill(tmp_path: Path, monkeypatch: pytest.Mon
     assert traj.attempts[0].killed == 0
     assert traj.attempts[1].killed == 2
     assert traj.attempts[1].meets_kill(0.5)
-    assert "unkilled mutants" in gen.seen[1][-1].content
-    assert "swap clear-to-zero" in gen.seen[1][-1].content
+    repair = gen.seen[1][-1].content
+    assert "assert the golden" in repair.lower()
+    assert "swap clear-to-zero" in repair
+    assert "```diff" in repair
 
 
 def test_zero_valid_mutants_does_not_spin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
