@@ -14,7 +14,13 @@ from pathlib import Path
 
 from formalsynapse.design_context import extract_context
 from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
-from formalsynapse.prompts import refinement_user, slot_repair_user, system_prompt, zero_shot_user
+from formalsynapse.prompts import (
+    extract_fail_user,
+    refinement_user,
+    slot_repair_user,
+    system_prompt,
+    zero_shot_user,
+)
 from formalsynapse.sva_edit import merge_sva, strip_labels, unwrap_formal
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.verify_harness import VerifyResult, verify
@@ -224,7 +230,10 @@ def run_block(
             attempts.append(att)
             if on_attempt is not None:
                 on_attempt(att)
-            break
+            if turn == max_turns:
+                break
+            messages.append(Message("user", extract_fail_user(report=str(exc))))
+            continue
         best: Attempt | None = None
         for i, raw in enumerate(raw_blocks, start=1):
             sva = merge_sva(kept, raw) if unwrap_formal(kept) else raw

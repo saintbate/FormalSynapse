@@ -129,6 +129,17 @@ def refinement_user(
     )
 
 
+def extract_fail_user(*, report: str) -> str:
+    """User message when every sample failed extract (think/prose, no labeled assert)."""
+    diag = clip_prompt_text(report, REPORT_CHAR_BUDGET, label="diagnostic")
+    return (
+        "The previous completion had no labeled assert/assume/cover property.\n"
+        "Emit ONLY a `ifdef FORMAL ... `endif block. No <think>, no prose, no markdown fences.\n"
+        "Every property needs a matching labeled assert or cover on the next line.\n\n"
+        f"## Extract diagnostic\n{diag}\n"
+    )
+
+
 def slot_repair_user(
     *,
     kept_sva: str,

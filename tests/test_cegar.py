@@ -217,6 +217,30 @@ GOOD_SLOT
     assert "FAILED LABELS to replace" in repair
 
 
+def test_extract_error_continues_cegar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("PASS"))
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    gen = Scripted(["this is not SVA", GOOD])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=1,
+        candidates=1,
+    )
+    assert traj.turns == 2
+    assert traj.attempts[0].result.status == "ERROR"
+    assert traj.ok
+    assert "no labeled assert" in gen.seen[1][2].content
+
+
 def test_suite_metrics() -> None:
     def traj(block: str, first: str, final: str) -> Trajectory:
         a0 = Attempt(1, BAD, _result(first))
