@@ -167,6 +167,25 @@ a_cut: assert property (p_ok
     assert "a_ok" in result.names
 
 
+def test_active_high_rst_antecedent_skipped() -> None:
+    text = """
+property p_ok;
+    @(posedge clk) disable iff (rst)
+    cke |=> qi == $past(q_next);
+endproperty
+a_ok: assert property (p_ok);
+property p_reset;
+    @(posedge clk) disable iff (rst)
+    rst |-> qi == 0;
+endproperty
+a_reset: assert property (p_reset);
+"""
+    result = lower(text)
+    assert "a_ok" in result.names
+    assert "a_reset" not in result.names
+    assert "reset" in result.verilog.lower() or "disable-iff" in result.verilog
+
+
 def test_rst_n_antecedent_skipped() -> None:
     text = """
 property p_ok;

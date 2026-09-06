@@ -34,3 +34,20 @@ def test_unknown_module_is_empty() -> None:
     ctx = extract_context("module a;\nendmodule\n", "missing")
     assert ctx.ports == ()
     assert ctx.top == "missing"
+
+
+def test_active_high_reset_disable_iff() -> None:
+    rtl = """
+module vcnt (
+    input clk,
+    input rst,
+    output q
+);
+endmodule
+"""
+    ctx = extract_context(rtl, "vcnt")
+    assert ctx.clock == "clk"
+    assert ctx.reset == "rst"
+    assert not ctx.reset_active_low
+    assert ctx.disable_iff_clause() == "disable iff (rst)"
+    assert "active-high" in ctx.render()

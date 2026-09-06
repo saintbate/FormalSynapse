@@ -83,27 +83,88 @@ _FENCE = re.compile(r"```(?:systemverilog|sv|verilog)?\s*([\s\S]*?)```", re.I)
 _IFDEF = re.compile(r"`ifdef\s+FORMAL\b([\s\S]*?)`endif", re.I)
 _PROPERTY = re.compile(r"property\s+[A-Za-z_]\w*", re.I)
 _LABELED = re.compile(r"[A-Za-z_]\w*\s*:\s*(assert|assume|cover)\s+property", re.I)
+_THINK = re.compile(r"<think>([\s\S]*?)</think>", re.I)
+_PLACEHOLDER = re.compile(r"<(?:antecedent|consequent|module|name|filename)>|p_<module>")
+
+
+_SVA_START = re.compile(
+    r"(`ifdef\s+FORMAL\b|```|property\s+[A-Za-z_]\w*|[A-Za-z_]\w*\s*:\s*(?:assert|assume|cover)\s+property)",
+    re.I,
+)
 
 
 class ExtractError(ValueError):
     """Model output contained no recognizable SVA block."""
 
 
+_PROP_BEGIN = re.compile(r"^\s*property\s+[A-Za-z_]\w*", re.I)
+_PROP_END = re.compile(r"\bendproperty\b", re.I)
+_STMT_BEGIN = re.compile(r"\b(?:assert|assume|cover)\s+property\b", re.I)
+
+
+def _keep_sva_line(line: str, *, in_prop: bool, in_stmt: bool) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("//") or stripped.startswith("`"):
+        return True
+    if in_prop or in_stmt:
+        return True
+    return bool(_PROPERTY.search(stripped) or _LABELED.search(stripped) or _STMT_BEGIN.search(stripped))
+
+
+def compact_sva(block: str) -> str | None:
+    """Keep property/assert/cover lines; drop English left inside ``ifdef FORMAL``."""
+    if _PLACEHOLDER.search(block):
+        return None
+    out: list[str] = []
+    in_prop = False
+    in_stmt = False
+    for line in block.splitlines():
+        stripped = line.strip()
+        if _PROP_BEGIN.search(stripped) and not _PROP_END.search(stripped):
+            in_prop = True
+        if _LABELED.search(stripped) or _STMT_BEGIN.search(stripped):
+            in_stmt = True
+        if _keep_sva_line(line, in_prop=in_prop, in_stmt=in_stmt):
+            out.append(line.rstrip())
+        if _PROP_END.search(stripped):
+            in_prop = False
+        if in_stmt and ";" in stripped:
+            in_stmt = False
+    body = "\n".join(out).strip()
+    if not body or not _LABELED.search(body):
+        return None
+    if "`ifdef" not in body:
+        return "`ifdef FORMAL\n" + body + "\n`endif\n"
+    if "`endif" not in body:
+        body += "\n`endif"
+    return body if body.endswith("\n") else body + "\n"
+
+
+def _strip_reasoning(text: str) -> str:
+    """Drop chain-of-thought wrappers some 14B checkpoints emit before the SVA."""
+    inners = [m.group(1) for m in _THINK.finditer(text)]
+    without = _THINK.sub("", text)
+    if _SVA_START.search(without):
+        body = without
+    else:
+        body = next((inner for inner in inners if _SVA_START.search(inner)), without)
+    start = _SVA_START.search(body)
+    if start is not None:
+        body = body[start.start() :]
+    return body
+
+
 def extract_sva(text: str) -> str:
     """Pull an SVA block out of model output (fences, ``ifdef``, or raw properties)."""
-    stripped = text.strip()
+    stripped = _strip_reasoning(text).strip()
     fences = _FENCE.findall(stripped)
     candidates = list(fences) if fences else []
     candidates.append(stripped)
     for cand in candidates:
         block = str(cand).strip()
         ifdef = _IFDEF.search(block)
-        if ifdef is not None:
-            inner = str(ifdef.group(1)).strip()
-            if _PROPERTY.search(inner) or _LABELED.search(inner):
-                return "`ifdef FORMAL\n" + inner + "\n`endif\n"
-        if _PROPERTY.search(block) or _LABELED.search(block):
-            if "`ifdef" not in block:
-                return "`ifdef FORMAL\n" + block.strip() + "\n`endif\n"
-            return block if block.endswith("\n") else block + "\n"
-    raise ExtractError("no property/assert/cover block in model output")
+        source = str(ifdef.group(1)).strip() if ifdef is not None else block
+        compact = compact_sva(source)
+        if compact is not None:
+            return compact
+    raise ExtractError("no assert/assume/cover property statements in model output")

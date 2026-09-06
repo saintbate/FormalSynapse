@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from formalsynapse.prompts import SYSTEM_PROMPT, refinement_user, slot_repair_user, zero_shot_user
+from formalsynapse.prompts import (
+    SPEC_CHAR_BUDGET,
+    SYSTEM_PROMPT,
+    clip_prompt_text,
+    refinement_user,
+    slot_repair_user,
+    system_prompt,
+    zero_shot_user,
+)
 
 
 def test_zero_shot_strips_formal_and_includes_spec() -> None:
@@ -32,6 +40,35 @@ def test_refinement_names_failed_labels_and_repeats() -> None:
     assert "a_counter_reset" in msg
     assert "SAME failing labels" in msg
     assert "$past" in SYSTEM_PROMPT or "rst_n" in SYSTEM_PROMPT
+
+
+def test_clip_prompt_text_keeps_requirements() -> None:
+    long_intro = "Intro filler. " * 200
+    spec = (
+        f"# vcnt\n\n{long_intro}\n\n"
+        "## Interface\n\n| Signal | Dir |\n| clk | in |\n\n"
+        "## Requirements\n\n1. On reset, qi is 0.\n2. When cke is low, qi holds.\n"
+    )
+    clipped = clip_prompt_text(spec, 400, label="specification")
+    assert "truncated" in clipped
+    assert "Requirements" in clipped
+    assert len(clipped) < len(spec)
+
+
+def test_zero_shot_clips_long_spec() -> None:
+    spec = "## Requirements\n\n" + "\n".join(f"{i}. hold the previous value when idle" for i in range(400))
+    user = zero_shot_user(module="vcnt", spec=spec, rtl="module vcnt;\nendmodule\n")
+    assert "truncated" in user
+    assert len(user) < len(spec) + 2000
+    assert len(user) < SPEC_CHAR_BUDGET + 2500
+
+
+def test_system_prompt_follows_reset_polarity() -> None:
+    assert SYSTEM_PROMPT == system_prompt()
+    high = system_prompt(clock="clk", reset="rst")
+    assert "@(posedge clk) disable iff (rst)" in high
+    assert "active-high" in high
+    assert "disable iff (!rst_n)" not in high
 
 
 def test_slot_repair_lists_kept_and_failed() -> None:

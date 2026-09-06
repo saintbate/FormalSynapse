@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: uv sync --group dev
+      - name: Ruff
+        run: uv run ruff check formalsynapse tests
+      - name: Mypy
+        run: uv run mypy --strict
+      - name: Pytest (no sby / no LLM)
+        run: uv run pytest -q -m "not toolchain and not llm"

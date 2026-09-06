@@ -260,10 +260,42 @@ def _add_llm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dataset", type=Path, default=default_output_dir() / "trajectories.jsonl")
 
 
-def cmd_generate(args: argparse.Namespace) -> int:
-    if not toolchain.have_sby():
-        _print("sby/yosys/z3 not found; run scripts/install_toolchain.sh && source scripts/env.sh")
-        return 1
+def _generate_jobs(
+    args: argparse.Namespace,
+) -> list[tuple[str, Path, Path, str, tuple[Path, ...]]] | None:
+    extras = tuple(Path(p) for p in (args.extra or []))
+    if getattr(args, "suite", None) == "assertllm2":
+        root = Path(args.root) if getattr(args, "root", None) else assertllm2_default_root()
+        if root is None:
+            _print("AssertLLM2 root required: --root or FSYN_ASSERTLLM2_ROOT")
+            return None
+        try:
+            designs = discover_assertllm2(root)
+        except FileNotFoundError as exc:
+            _print(str(exc))
+            return None
+        chosen = select_assertllm2(designs, only=args.only, open_only=True)
+        if not chosen:
+            _print("no open AssertLLM2 designs selected")
+            return None
+        jobs: list[tuple[str, Path, Path, str, tuple[Path, ...]]] = []
+        for design in chosen:
+            if design.spec is None:
+                _print(f"[{design.key}] missing spec.md")
+                continue
+            jobs.append(
+                (
+                    design.name,
+                    design.dut,
+                    design.spec,
+                    design.top,
+                    _unique_extras(design.extras + extras),
+                )
+            )
+        return jobs
+    if args.block is None:
+        _print("pass a block path or --suite assertllm2 --only <name>")
+        return None
     block = Path(args.block)
     if block.is_dir():
         top = args.top or block.name
@@ -273,25 +305,52 @@ def cmd_generate(args: argparse.Namespace) -> int:
         dut = block
         top = args.top or dut.stem
         spec = Path(args.spec) if args.spec else dut.with_name(f"{top}.spec.md")
-    traj = run_block(
-        dut_path=dut,
-        spec_path=spec,
-        top=top,
-        generator=_llm_from_args(args),
-        workdir=Path(args.workdir),
-        depth=args.depth,
-        timeout_s=args.timeout,
-        max_feedback=args.max_feedback,
-        candidates=args.candidates,
-        on_attempt=lambda att: _print_suite_attempt(top, att),
-    )
-    _print(f"{traj.block}: {traj.status} in {traj.turns} turn(s), {traj.elapsed_s:.1f}s")
-    if args.out:
-        Path(args.out).write_text(traj.attempts[-1].sva if traj.attempts else "")
-    n = log_trajectory(Path(args.dataset), traj)
-    if n:
-        _print(f"logged {n} heal row(s) -> {args.dataset}")
-    return 0 if traj.ok else 1
+    return [(top, dut, spec, top, extras)]
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    if not toolchain.have_sby():
+        _print("sby/yosys/z3 not found; run scripts/install_toolchain.sh && source scripts/env.sh")
+        return 1
+    jobs = _generate_jobs(args)
+    if jobs is None:
+        return 1
+    failed = 0
+    for name, dut, spec, top, extras in jobs:
+
+        def _on_attempt(att: Attempt, block: str = name) -> None:
+            _print_suite_attempt(block, att)
+
+        traj = run_block(
+            dut_path=dut,
+            spec_path=spec,
+            top=top,
+            generator=_llm_from_args(args),
+            workdir=Path(args.workdir),
+            depth=args.depth,
+            timeout_s=args.timeout,
+            max_feedback=args.max_feedback,
+            candidates=args.candidates,
+            extra_files=extras,
+            on_attempt=_on_attempt,
+        )
+        _print(f"{traj.block}: {traj.status} in {traj.turns} turn(s), {traj.elapsed_s:.1f}s")
+        n = log_trajectory(Path(args.dataset), traj)
+        if n:
+            _print(f"logged {n} heal row(s) -> {args.dataset}")
+        last_sva = traj.attempts[-1].sva if traj.attempts else ""
+        if not traj.ok:
+            failed += 1
+        if args.out:
+            dest = Path(args.out)
+            if dest.is_dir() or (len(jobs) > 1 and dest.suffix == ""):
+                dest.mkdir(parents=True, exist_ok=True)
+                dest = dest / f"{name}.sva.sv"
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(last_sva)
+            _print(f"wrote {dest}")
+    return 0 if failed == 0 else 1
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
@@ -491,9 +550,9 @@ def cmd_gate(args: argparse.Namespace) -> int:
             for block in blocks:
                 name = block.name
                 dut = block / f"{name}.sv"
-                sva_path = block / f"{name}.sva.sv"
-                if not sva_path.is_file():
-                    _print(f"[{name}] missing {sva_path.name}")
+                sva_path = _resolve_sva(args, name, block / f"{name}.sva.sv")
+                if sva_path is None or not sva_path.is_file():
+                    _print(f"[{name}] missing {sva_path}")
                     return 1
                 pairs.append((name, dut, sva_path, name))
 
@@ -617,10 +676,19 @@ def build_parser() -> argparse.ArgumentParser:
     trace.add_argument("--assertion", action="append", default=[])
     trace.add_argument("--internal", action="store_true")
 
-    gen = sub.add_parser("generate", help="zero-shot + CEGAR on one block")
-    gen.add_argument("block", type=Path, help="golden block directory or DUT .sv")
+    gen = sub.add_parser("generate", help="zero-shot + CEGAR on one block or an AssertLLM2 design")
+    gen.add_argument("block", type=Path, nargs="?", default=None, help="golden block directory or DUT .sv")
     gen.add_argument("--top", default=None)
     gen.add_argument("--spec", type=Path, default=None)
+    gen.add_argument("--extra", action="append", type=Path, default=None, help="extra compile units (repeatable)")
+    gen.add_argument(
+        "--suite",
+        choices=("assertllm2",),
+        default=None,
+        help="generate against an AssertLLM2 checkout instead of a local block",
+    )
+    gen.add_argument("--root", type=Path, default=None, help="AssertLLM2 repo root (or FSYN_ASSERTLLM2_ROOT)")
+    gen.add_argument("--only", nargs="*", default=None, help="restrict AssertLLM2 generation to these names")
     gen.add_argument("--max-feedback", type=int, default=MAX_FEEDBACK)
     gen.add_argument("--out", type=Path, default=None, help="write the last SVA attempt here")
     _add_llm_args(gen)

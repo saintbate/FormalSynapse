@@ -39,6 +39,7 @@ _LOCALPARAM = re.compile(
 )
 _CLOCK_NAMES = frozenset({"clk", "clock"})
 _RESET_NAMES = frozenset({"rst_n", "rst", "reset_n", "reset", "resetn"})
+_ACTIVE_LOW_RESET = frozenset({"rst_n", "reset_n", "resetn"})
 
 
 @dataclass(frozen=True)
@@ -57,12 +58,24 @@ class DesignContext:
     clock: str | None
     reset: str | None
 
+    @property
+    def reset_active_low(self) -> bool:
+        return self.reset is not None and self.reset.lower() in _ACTIVE_LOW_RESET
+
+    def disable_iff_clause(self) -> str:
+        """SVA ``disable iff (...)`` matching this DUT's reset polarity."""
+        reset = self.reset or "rst_n"
+        active_low = self.reset is None or self.reset_active_low
+        cond = f"!{reset}" if active_low else reset
+        return f"disable iff ({cond})"
+
     def render(self) -> str:
         lines = [f"module {self.top}"]
         if self.clock or self.reset:
             clk = self.clock or "?"
             rst = self.reset or "?"
-            lines.append(f"clock {clk}  reset {rst}")
+            polarity = "active-low" if self.reset_active_low or self.reset is None else "active-high"
+            lines.append(f"clock {clk}  reset {rst} ({polarity})")
         if self.ports:
             lines.append("ports:")
             for sig in self.ports:

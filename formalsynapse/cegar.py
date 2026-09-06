@@ -14,7 +14,7 @@ from pathlib import Path
 
 from formalsynapse.design_context import extract_context
 from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
-from formalsynapse.prompts import SYSTEM_PROMPT, refinement_user, slot_repair_user, zero_shot_user
+from formalsynapse.prompts import refinement_user, slot_repair_user, system_prompt, zero_shot_user
 from formalsynapse.sva_edit import merge_sva, strip_labels, unwrap_formal
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.verify_harness import VerifyResult, verify
@@ -181,6 +181,7 @@ def run_block(
     timeout_s: float = 300.0,
     max_feedback: int = MAX_FEEDBACK,
     candidates: int = 1,
+    extra_files: tuple[Path, ...] = (),
     on_attempt: Callable[[Attempt], None] | None = None,
 ) -> Trajectory:
     """Zero-shot + up to ``max_feedback`` repairs. ``candidates`` is sby-graded best-of-N."""
@@ -188,10 +189,11 @@ def run_block(
     rtl = dut_path.read_text()
     spec = spec_path.read_text() if spec_path.is_file() else ""
     clean_rtl = strip_formal_blocks(rtl)
-    context = extract_context(clean_rtl, top).render()
+    ctx = extract_context(clean_rtl, top)
+    context = ctx.render()
     user0 = zero_shot_user(module=top, spec=spec, rtl=clean_rtl, context=context)
     messages: list[Message] = [
-        Message("system", SYSTEM_PROMPT),
+        Message("system", system_prompt(clock=ctx.clock or "clk", reset=ctx.reset or "rst_n")),
         Message("user", user0),
     ]
     attempts: list[Attempt] = []
@@ -234,6 +236,7 @@ def run_block(
                 timeout_s=timeout_s,
                 workdir=workdir,
                 run_name=f"cegar-{top}-{turn}-{i}",
+                extra_files=extra_files,
             )
             att = Attempt(turn, sva, result)
             if best is None or _rank(result) < _rank(best.result):

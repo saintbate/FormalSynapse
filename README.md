@@ -40,7 +40,9 @@ fsyn gate --only counter
 # fsyn gate --dut path/to/dut.sv --sva path/to/cand.sva.sv --top dut
 # AssertLLM2 (clone separately; do not copy into benchmarks/golden):
 # fsyn gate --suite assertllm2 --root ~/src/AssertLLM2 --list
+# fsyn generate --suite assertllm2 --only versatile_counter --out cand.sva.sv
 # fsyn gate --suite assertllm2 --root ~/src/AssertLLM2 --only versatile_counter --sva cand.sva.sv
+# fsyn gate --sva ~/.cache/formalsynapse/output/cegar-14b-sva   # generated golden candidates
 
 # 5. Verify a candidate SVA against a DUT
 fsyn verify --dut benchmarks/golden/sync_fifo/sync_fifo.sv --top sync_fifo \
@@ -97,6 +99,7 @@ fsyn doctor                  # pings the LLM endpoint
 fsyn baseline                # zero-shot (target 40% first-pass after the 14B is up)
 fsyn cegar                   # slot repair + best-of-N (target 50–60%)
 fsyn generate benchmarks/golden/counter --max-feedback 3 --out /tmp/counter.sva.sv
+# fsyn generate --suite assertllm2 --only versatile_counter --out cand.sva.sv
 ```
 
 Healed `(Prompt, Faulty_Attempt, Counterexample, Fixed_Attempt)` rows are appended to

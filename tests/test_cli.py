@@ -20,6 +20,16 @@ def test_gate_parser() -> None:
     assert args.max_mutants == 8
 
 
+def test_generate_assertllm2_parser() -> None:
+    args = build_parser().parse_args(
+        ["generate", "--suite", "assertllm2", "--only", "versatile_counter", "--out", "cand.sva.sv"]
+    )
+    assert args.cmd == "generate"
+    assert args.block is None
+    assert args.suite == "assertllm2"
+    assert args.only == ["versatile_counter"]
+
+
 def test_trace_fixture(capsys: pytest.CaptureFixture[str]) -> None:
     vcd = Path(__file__).resolve().parent / "fixtures" / "counter_trace.vcd"
     rc = main(["trace", str(vcd), "--top", "counter", "--step", "2"])

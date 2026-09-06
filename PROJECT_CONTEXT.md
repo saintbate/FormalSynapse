@@ -123,15 +123,45 @@ these are not JasperGold numbers):
 | spi_master | PASS | PASS | 0.70 | 2/6 |
 | sync_fifo | PASS | PASS | 0.58 | 7/7 |
 
+CodeV-SVA-14B on the 10 golden blocks (`sby` only, not JasperGold): first-pass
+50%, CEGAR 80% (8/10 prove). `fsyn gate --sva` on those 8 survivors:
+
+| block | prove | cover | coi | kill |
+|---|---|---|---|---|
+| counter | PASS | n/a | 1.00 | 8/8 |
+| edge_detector | PASS | PASS | 1.00 | 1/1 |
+| gray_counter | PASS | PASS | 1.00 | 0/2 |
+| onehot_fsm | PASS | n/a | 0.56 | 0/2 |
+| priority_arbiter | PASS | n/a | 0.50 | 0/6 |
+| shift_register | PASS | PASS | 0.40 | 0/2 |
+| skid_buffer | PASS | n/a | 0.50 | 1/5 |
+| spi_master | PASS | n/a | 0.70 | 0/6 |
+
+Most CEGAR PASSes are shallow: they hold on golden RTL and miss the cheap mutants.
+That is why the gate exists. `rr_arbiter` and `sync_fifo` stayed ERROR.
+
 AssertLLM2 ingest: `fsyn gate --suite assertllm2 --root <clone> --list` walks the
-83-design tree, skips VHDL, and indexes shipped `mutations/mutants/M_*`. Gate a
-candidate with `--sva`. Do not vendor the designs. Next: published open-grader
-numbers on a Verilog subset once a generator is pointed at those specs.
+83-design tree, skips VHDL, and indexes shipped `mutations/mutants/M_*`. Generate
+with `fsyn generate --suite assertllm2 --only <name>` (clock/reset polarity and
+`include/` extras come from the DUT). Do not vendor the designs.
+
+First open-grader generate on `versatile_counter` (CodeV-SVA-14B, BMC 20, not
+JasperGold): turn 1–2 lowering ERROR (prose, no assert); turn 3 compiled and
+FAILED `a_reset_deassert` (`1'b1 |-> qi == 0` after `disable iff (rst)`);
+turn 4 blew the 8192-token context. The shipped-mutant kill column is not
+meaningful on a FAIL prove.
+
+Generate-path hardening now in tree: specs/RTL/SVA/diagnostics are clipped for
+the 8k window; extract drops English inside ``ifdef`` and requires a labeled
+assert/cover; the lowerer skips reset-signal antecedents for `rst` as well as
+`rst_n`. Re-run `versatile_counter` before publishing a second open-grader
+number.
 
 ### Weeks 5–6
 
-GitHub Action + Nix flake. One external repo (Ibex, Tiny Tapeout, or a riscv-formal user)
-running the gate on PRs.
+`fsyn` unit CI (ruff, mypy, pytest minus `toolchain`/`llm`) is in
+`.github/workflows/ci.yml`. Next: Nix flake for the OSS CAD Suite, then one
+external repo (Ibex, Tiny Tapeout, or a riscv-formal user) running the gate on PRs.
 
 ### Weeks 7–9
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from formalsynapse.assertllm2 import discover, load_mutants, select, write_index
-from formalsynapse.cli import build_parser, main
+from formalsynapse.cli import _generate_jobs, build_parser, main
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assertllm2"
 
@@ -71,3 +71,18 @@ def test_gate_list_cli(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert (tmp_path / "assertllm2_index.json").is_file()
+
+
+def test_generate_jobs_assertllm2_resolves_spec() -> None:
+    args = build_parser().parse_args(
+        ["generate", "--suite", "assertllm2", "--root", str(FIXTURE), "--only", "tiny_box"]
+    )
+    jobs = _generate_jobs(args)
+    assert jobs is not None
+    assert len(jobs) == 1
+    name, dut, spec, top, extras = jobs[0]
+    assert name == "tiny_box"
+    assert dut.name == "tiny_box.sv"
+    assert spec.name == "spec.md"
+    assert top == "tiny_box"
+    assert extras == ()

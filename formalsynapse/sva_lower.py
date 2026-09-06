@@ -370,19 +370,28 @@ def _check_expr(expr: str) -> None:
         raise LowerError(f"empty bit-select [] is not valid: {expr.strip()!r}")
 
 
+_RESET_HINT = re.compile(r"(?i)^(rst|rst_n|reset|reset_n|resetn)$")
+
+
+def _norm_sv_expr(text: str) -> str:
+    s = re.sub(r"\s+", "", text)
+    if s.startswith("(") and s.endswith(")") and s.count("(") == 1:
+        s = s[1:-1]
+    return s
+
+
 def _redundant_reset_antecedent(ante: str, disable: str | None) -> bool:
-    """True when the antecedent is just rst_n / !rst_n under ``disable iff (!rst_n)``."""
+    """True when the antecedent is a reset literal (vacuous or always-on under disable iff)."""
+    a = _norm_sv_expr(ante)
+    name = a[1:] if a.startswith("!") else a
+    if _RESET_HINT.fullmatch(name):
+        return True
     if disable is None:
         return False
-    d = re.sub(r"\s+", "", disable)
-    a = re.sub(r"\s+", "", ante)
-    if a.startswith("(") and a.endswith(")") and a.count("(") == 1:
-        a = a[1:-1]
-    if d.startswith("(") and d.endswith(")") and d.count("(") == 1:
-        d = d[1:-1]
-    if d != "!rst_n":
-        return False
-    return a in {"rst_n", "!rst_n"}
+    d = _norm_sv_expr(disable)
+    if a == d:
+        return True
+    return a == f"!{d}" or d == f"!{a}"
 
 
 _CLOCKING = re.compile(r"^\s*@\s*\(\s*posedge\s+([A-Za-z_]\w*)\s*\)\s*", re.S)
@@ -424,7 +433,7 @@ def parse_property_body(body: str) -> Property:
     ante, _ = _parse_seq(parts[0][1], allow_leading_delay=False)
     if _redundant_reset_antecedent(" && ".join(ante.exprs), disable):
         raise LowerError(
-            "antecedent is rst_n or !rst_n under disable iff (!rst_n); that is either "
+            "antecedent is a reset signal or the disable-iff condition; that is either "
             "vacuous or an always-on invariant (e.g. rst_n |-> count==0 means count is "
             "always 0). Delete this property and encode post-reset behavior"
         )
