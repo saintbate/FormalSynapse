@@ -146,16 +146,19 @@ with `fsyn generate --suite assertllm2 --only <name>` (clock/reset polarity and
 `include/` extras come from the DUT). Do not vendor the designs.
 
 First open-grader generate on `versatile_counter` (CodeV-SVA-14B, BMC 20, not
-JasperGold): turn 1–2 lowering ERROR (prose, no assert); turn 3 compiled and
-FAILED `a_reset_deassert` (`1'b1 |-> qi == 0` after `disable iff (rst)`);
-turn 4 blew the 8192-token context. The shipped-mutant kill column is not
-meaningful on a FAIL prove.
+JasperGold) aborted: turn 1–2 lowering ERROR; turn 3 FAILED `a_reset_deassert`;
+turn 4 blew the 8192-token context.
 
-Generate-path hardening now in tree: specs/RTL/SVA/diagnostics are clipped for
-the 8k window; extract drops English inside ``ifdef`` and requires a labeled
-assert/cover; the lowerer skips reset-signal antecedents for `rst` as well as
-`rst_n`. Re-run `versatile_counter` before publishing a second open-grader
-number.
+After generate-path hardening (clip + labeled-assert extract + reset-polarity
+skip) a first rerun still aborted: CodeV-SVA-14B spent turn 1 in `<think>` with
+no extractable SVA, and CEGAR treated `GenerateError` as terminal. CEGAR now
+continues with an extract-fail user message.
+
+Second rerun (8 candidates, 3 feedback turns, 23 min): turn 1–2 extract ERROR
+(`<think>` only); turn 3 PASS. Winning SVA is one property,
+`clear |-> q_next == 0`. Gate: prove PASS, cover n/a, COI 0.17, kill 2/8
+(25%) — both kills are the two shipped mutants that break clear-to-zero.
+Shallow but honest: the open grader no longer reports a FAIL as a kill score.
 
 ### Weeks 5–6
 
