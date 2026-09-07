@@ -16,6 +16,12 @@ inputs:
   extra:
     description: Extra compile units, whitespace/newline separated (optional)
     default: ""
+  params:
+    description: >-
+      Top-level parameter overrides, NAME=VALUE whitespace/newline separated (yosys chparam).
+      Use it when the shipped parameters put the DUT's behavior outside any affordable BMC
+      bound; the report states the values the result holds for.
+    default: ""
   min-kill:
     description: Minimum mutation-kill rate (0–1)
     default: "0"
@@ -67,6 +73,7 @@ runs:
         FSYN_SVA: ${{ inputs.sva }}
         FSYN_TOP: ${{ inputs.top }}
         FSYN_EXTRA: ${{ inputs.extra }}
+        FSYN_PARAMS: ${{ inputs.params }}
         FSYN_DEPTH: ${{ inputs.depth }}
         FSYN_TIMEOUT: ${{ inputs.timeout }}
         FSYN_MIN_KILL: ${{ inputs.min-kill }}
@@ -78,6 +85,9 @@ runs:
         args=()
         for f in $FSYN_EXTRA; do
           args+=(--extra "$f")
+        done
+        for p in $FSYN_PARAMS; do
+          args+=(--param "$p")
         done
         if [[ "$FSYN_TRUSTED" == "true" ]]; then
           args+=(--trusted)

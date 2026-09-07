@@ -38,4 +38,8 @@ jobs:
           dut: .dut/rtl/uart_tx.v
           sva: examples/uart_tx/uart_tx.sva.sv
           top: uart_tx
+          # 3 clocks/bit, 4-bit frame: frame timing fits a 30-step bound (see the SVA header).
+          params: "BIT_RATE=25000000 PAYLOAD_BITS=2"
+          depth: "30"
+          min-kill: "0.5"
           timeout: "180"
