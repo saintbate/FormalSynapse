@@ -811,7 +811,7 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
     if defines:
         text = expand_macros(text, defines)
     text = strip_tick_labels(text)
-    leftover = leftover_macros(text)
+    leftover = leftover_macros(strip_comments(text))
     if leftover:
         names = ", ".join(f"`{n}" for n in leftover)
         raise LowerError(

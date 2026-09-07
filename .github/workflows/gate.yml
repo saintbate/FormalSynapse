@@ -1,8 +1,8 @@
 name: fsyn-gate
 
-# Runs the open sby gate on the golden counter on every PR.
-# External repos: checkout FormalSynapse into `.fsyn` and
-# `uses: ./.fsyn/.github/actions/fsyn-gate` with dut/sva/top.
+# Runs the open sby gate on the golden counter and on one external DUT
+# (ben-marshall/uart transmitter). External repos: checkout FormalSynapse
+# into `.fsyn` and `uses: ./.fsyn/.github/actions/fsyn-gate` with dut/sva/top.
 
 on:
   pull_request:
@@ -20,3 +20,19 @@ jobs:
           dut: benchmarks/golden/counter/counter.sv
           sva: benchmarks/golden/counter/counter.sva.sv
           top: counter
+
+  uart_tx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ben-marshall/uart
+          ref: 5fd2db850a41b65aa34f3a31c663fc8704c7abd8
+          path: .dut
+      - uses: ./.github/actions/fsyn-gate
+        with:
+          dut: .dut/rtl/uart_tx.v
+          sva: examples/uart_tx/uart_tx.sva.sv
+          top: uart_tx
+          timeout: "180"

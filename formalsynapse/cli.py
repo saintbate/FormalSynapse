@@ -597,8 +597,9 @@ def cmd_gate(args: argparse.Namespace) -> int:
                     return 1
                 pairs.append((name, dut, sva_path, name))
 
+        extras = _unique_extras(tuple(Path(p) for p in (args.extra or [])))
         for name, dut, sva_path, top in pairs:
-            clock_skip = dual_edge_clock_reason_from_files(dut)
+            clock_skip = dual_edge_clock_reason_from_files(dut, *extras)
             if clock_skip:
                 _print(f"[{name}] skip: {clock_skip}")
                 failed += 1
@@ -615,6 +616,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 timeout_s=args.timeout,
                 max_mutants=args.max_mutants,
                 run_cover=not args.no_cover,
+                extra_files=extras,
             )
             write_report(report, block_dir / "gate.json")
             _print(
@@ -700,6 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--dut", type=Path, default=None, help="DUT .sv (omit to run benchmarks/golden)")
     gate.add_argument("--sva", type=Path, default=None, help="candidate SVA file, or a directory of <name>.sva.sv")
     gate.add_argument("--top", default=None)
+    gate.add_argument("--extra", action="append", type=Path, default=None, help="extra compile units (repeatable)")
     gate.add_argument("--only", nargs="*", default=None, help="restrict to these block / design names")
     gate.add_argument("--depth", type=int, default=20)
     gate.add_argument("--timeout", type=float, default=60.0)

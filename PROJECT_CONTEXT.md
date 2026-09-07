@@ -215,9 +215,10 @@ rewritten to ordinary labels so leftover-macro does not fire.
 `.github/workflows/ci.yml`. A Nix flake (`flake.nix`) provides the Python
 package and a `nix develop` shell with nixpkgs yosys/sby/z3; the full OSS
 CAD Suite (yosys-slang) remains `scripts/install_toolchain.sh`.
-`.github/workflows/gate.yml` runs `fsyn gate` on the golden `counter` on
-every PR. External repos checkout this tree into `.fsyn` and call
-`.github/actions/fsyn-gate` with their DUT/SVA/top.
+`.github/workflows/gate.yml` runs `fsyn gate` on the golden `counter` and
+on `ben-marshall/uart` `uart_tx` (RTL checked out in CI, SVA in
+`examples/uart_tx/`). External repos checkout this tree into `.fsyn` and
+call `.github/actions/fsyn-gate` with their DUT/SVA/top.
 
 ### Weeks 7–9
 

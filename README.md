@@ -72,7 +72,8 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
 PROJECT_CONTEXT.md            master project context (Part 1 of the founding prompt)
 .cursorrules                  Cursor agent rules
 kilo.jsonc, .kilo/rules/      Kilo Code permissions and agent protocol
-flake.nix                     nix develop + `fsyn` package (nixpkgs yosys; full suite still install_toolchain.sh)
+flake.nix, flake.lock         nix develop + `fsyn` package (nixpkgs yosys; full suite still install_toolchain.sh)
+examples/uart_tx/             hand-written SVA for the external `ben-marshall/uart` CI consumer
 scripts/                      install_toolchain.sh, env.sh
 .github/actions/fsyn-gate     reusable composite action for `fsyn gate` on a DUT/SVA pair
 benchmarks/smoke/counter/     end-to-end toolchain sanity check (one passing, one failing task)
@@ -135,8 +136,9 @@ Anti-collision rules:
 nix develop          # python + nixpkgs yosys/sby/z3; still source scripts/env.sh for yosys-slang
 ```
 
-This repo runs `fsyn gate` on the golden `counter` in `.github/workflows/gate.yml`.
-An external repo can do the same on PRs:
+This repo runs `fsyn gate` on the golden `counter` and on
+[ben-marshall/uart](https://github.com/ben-marshall/uart) `uart_tx` in
+`.github/workflows/gate.yml`. An external repo can do the same on PRs:
 
 ```yaml
 jobs:
@@ -146,7 +148,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          repository: <this-repo>
+          repository: saintbate/FormalSynapse
           path: .fsyn
       - uses: ./.fsyn/.github/actions/fsyn-gate
         with:

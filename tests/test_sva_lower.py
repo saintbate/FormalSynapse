@@ -270,3 +270,12 @@ def test_lower_accepts_tick_prefixed_label() -> None:
     result = lower(text)
     assert "a_counter_reset" in result.names
     assert "`a_counter_reset" not in result.verilog
+
+
+def test_lower_ignores_backticks_in_comments() -> None:
+    text = """
+// DUT is ben-marshall/uart `uart_tx`
+a_idle: assert property (@(posedge clk) disable iff (!resetn) !busy |-> txd);
+"""
+    result = lower(text)
+    assert "a_idle" in result.names

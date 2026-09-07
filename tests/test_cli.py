@@ -20,6 +20,13 @@ def test_gate_parser() -> None:
     assert args.max_mutants == 8
 
 
+def test_gate_extra_parser() -> None:
+    args = build_parser().parse_args(
+        ["gate", "--dut", "rtl/foo.sv", "--sva", "foo.sva.sv", "--top", "foo", "--extra", "rtl/bar.v"]
+    )
+    assert args.extra == [Path("rtl/bar.v")]
+
+
 def test_generate_assertllm2_parser() -> None:
     args = build_parser().parse_args(
         ["generate", "--suite", "assertllm2", "--only", "versatile_counter", "--out", "cand.sva.sv"]
