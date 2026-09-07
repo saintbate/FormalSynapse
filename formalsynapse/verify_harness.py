@@ -267,6 +267,7 @@ def run_sby(sby_path: Path, *, timeout_s: float, extra_args: tuple[str, ...] = (
         text=True,
         env=toolchain.tool_env(),
         start_new_session=True,
+        preexec_fn=_limit_memory,
     )
     try:
         out, _ = proc.communicate(timeout=timeout_s)
@@ -278,6 +279,36 @@ def run_sby(sby_path: Path, *, timeout_s: float, extra_args: tuple[str, ...] = (
             out = ""
         return 8, str(out or ""), True
     return proc.returncode, out or "", False
+
+
+def sby_memory_limit_mb() -> int:
+    """Per-process address-space cap for sby and its children (``FSYN_SBY_MEM_MB``, 0 = none).
+
+    A mutant can turn a ``for`` loop into one that never terminates; yosys then unrolls it until
+    the machine is out of memory, and on a CI runner that kills the whole job. With the cap the
+    allocation fails, yosys exits, and the mutant is an ERROR that the gate excludes.
+    """
+    raw = os.environ.get("FSYN_SBY_MEM_MB", "4096").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 4096
+
+
+def _limit_memory() -> None:  # pragma: no cover - runs in the forked child
+    limit_mb = sby_memory_limit_mb()
+    if limit_mb <= 0:
+        return
+    try:
+        import resource
+
+        limit = limit_mb * 1024 * 1024
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit if hard == resource.RLIM_INFINITY else hard))
+    except (ImportError, ValueError, OSError):
+        pass
 
 
 def _kill_group(proc: subprocess.Popen[str]) -> None:

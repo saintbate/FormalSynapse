@@ -276,14 +276,19 @@ Re-gating the saved outputs with the fixed grader found two more holes:
 
 Also: `design_context` reads non-ANSI port lists (`module m(a, b); input a;`),
 which is how the uart's reset had gone undetected; `fsyn gate --sva <dir>` grades
-the blocks it has and lists the missing ones instead of aborting.
+the blocks it has and lists the missing ones instead of aborting. The mutator no
+longer touches `for`/`while`/`repeat`/`generate` headers: a `-`→`+` on the uart's
+down-counting loop made yosys unroll forever and took the CI runner down with an
+OOM (exit 143). As a backstop, sby and its children now run under a per-process
+address-space cap (`FSYN_SBY_MEM_MB`, default 4096) so a runaway elaboration is
+an ERROR for that mutant, not a dead job.
 
 Re-gate with the fixed grader (BMC 20, 8 mutants, `--min-kill 0.25`):
 
 | set | result |
 |---|---|
 | golden hand-written SVA, 10 blocks | 10/10 prove+cover PASS; kill 100% on 7, `rr_arbiter` 8/8, `onehot_fsm` 1/2, `spi_master` 2/6 |
-| `examples/uart_tx` (ben-marshall/uart) | prove+cover PASS, kill 0/7 (frame-timing mutants are ~5k cycles out at 9600 baud; CI gates prove+cover only) |
+| `examples/uart_tx` (ben-marshall/uart) | prove+cover PASS, kill 0/8 (frame-timing mutants are ~5k cycles out at 9600 baud; CI gates prove+cover only) |
 | saved CodeV-14B golden candidates, 8 of 10 | 2/8 pass the bar (`counter` 8/8, `edge_detector` 1/1); `onehot_fsm` proves but kills 0/2; 5 ERROR on prose/undefined-macro output |
 | saved AssertLLM2 candidates, 4 | `versatile_counter` PASS 3/8 (38%) unchanged; `uart` and `present_cipher` now ERROR (invented `rst_n`, item 5); `programmable_interval_timer` FAIL (`a_counter_reset` @ step 2, genuine) |
 

@@ -60,6 +60,27 @@ def test_skips_reset_line() -> None:
         assert "if (!!rst_n)" not in mutant.rtl
 
 
+def test_loop_headers_are_never_mutated() -> None:
+    """`i = i + 1` on a down-counting for loop never terminates; yosys unrolls it until OOM."""
+    rtl = """
+module shifter (input clk, input load, input [7:0] d, output reg [7:0] q);
+    integer i;
+    always @(posedge clk) begin
+        if (load) q <= d;
+        else begin
+            for (i = 8 - 2; i >= 0; i = i - 1) begin
+                q[i] <= q[i + 1];
+            end
+        end
+    end
+endmodule
+"""
+    mutants = generate_mutants(rtl, max_mutants=32)
+    assert mutants, "the loop body and the if are still mutable"
+    for m in mutants:
+        assert "for (i = 8 - 2; i >= 0; i = i - 1)" in m.rtl, m.description
+
+
 def test_logic_and_eq_ops() -> None:
     mutants = generate_mutants(ARITH, max_mutants=8)
     ops = {m.operator for m in mutants}

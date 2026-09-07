@@ -36,7 +36,12 @@ _OPS: tuple[tuple[str, str, str], ...] = (
 
 # ``if (en)``, ``if (!en)``, ``if (req[0])``, ``if (!next_grant[1])``
 _IF_IDENT = re.compile(r"\bif\s*\(\s*(!?)\s*([A-Za-z_]\w*(?:\s*\[[^\]\n]+\])?)\s*\)")
-_SKIP_LINE = re.compile(r"\b(localparam|parameter|posedge|negedge|always)\b", re.IGNORECASE)
+# Loop headers are excluded too: ``for (i = N-2; i >= 0; i = i + 1)`` never terminates, and
+# yosys unrolls it until the machine runs out of memory (that took a CI runner down).
+_SKIP_LINE = re.compile(
+    r"\b(localparam|parameter|posedge|negedge|always|for|while|repeat|genvar|generate)\b",
+    re.IGNORECASE,
+)
 _DEFAULT_PROTECTED = frozenset({"rst_n", "rst", "reset", "reset_n", "resetn", "clk", "clock"})
 # Text between the last statement boundary and ``<=`` that makes it a non-blocking assignment:
 # an optional ``begin``/case-label, then a bare lvalue (``q``, ``mem[i]``, ``s.f``).
