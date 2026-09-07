@@ -85,6 +85,13 @@ class VerifyResult:
     lowered: LoweredSVA | None = None
     unreached_covers: tuple[str, ...] = field(default_factory=tuple)
     reached_covers: tuple[str, ...] = field(default_factory=tuple)
+    # Top-level parameter overrides the DUT was elaborated with. A result under overrides is a
+    # statement about the RTL *at those parameters*, so every report carries them.
+    params: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+    @property
+    def params_text(self) -> str:
+        return " ".join(f"{n}={v}" for n, v in self.params)
 
     @property
     def reward(self) -> float:
@@ -108,6 +115,8 @@ class VerifyResult:
 
     def summary(self) -> str:
         head = f"{self.status} (rc={self.exit_code}, mode={self.mode}, depth={self.depth}, {self.elapsed_s:.1f}s)"
+        if self.params:
+            head += f" params: {self.params_text}"
         if self.failed_assertions:
             head += f" failed: {', '.join(self.failed_assertions)}"
         if self.failing_step is not None:
@@ -120,7 +129,14 @@ class VerifyResult:
 
 
 def _error_result(
-    run_dir: Path, message: str, *, depth: int, mode: Mode, started: float, log: Path | None = None
+    run_dir: Path,
+    message: str,
+    *,
+    depth: int,
+    mode: Mode,
+    started: float,
+    log: Path | None = None,
+    params: tuple[tuple[str, str], ...] = (),
 ) -> VerifyResult:
     return VerifyResult(
         status="ERROR",
@@ -135,6 +151,7 @@ def _error_result(
         depth=depth,
         mode=mode,
         elapsed_s=time.monotonic() - started,
+        params=params,
     )
 
 
@@ -239,13 +256,26 @@ _KILL_GRACE_S = 5.0
 _TIMEOUT_GRACE_S = 60.0
 
 
-def _nothing_to_check(lowered: LoweredSVA, mode: Mode) -> str | None:
-    """Why a run would be meaningless: no assert to prove, or no cover to reach."""
+def _nothing_to_check(lowered: LoweredSVA, mode: Mode, depth: int) -> str | None:
+    """Why a run would be meaningless: no assert to prove, no cover to reach, or a bound too short.
+
+    Every lowered check is gated on ``f_fsyn_cycles >= history_depth`` and BMC at ``depth`` D
+    visits steps 0..D-1, so a check whose guard depth is >= D never fires. sby would still say
+    PASS; that is not a proof of anything, so it is an ERROR that names the offending labels.
+    """
     if mode in ("bmc", "prove") and not lowered.proves_something and not lowered.verbatim_blocks:
         detail = "; ".join(lowered.skipped) or "block contains only cover statements"
         return f"no assertions were lowered, nothing to prove: {detail}"
     if mode == "cover" and not any(a.kind == "cover" for a in lowered.assertions):
         return "no cover statements to check"
+    kinds = ("cover",) if mode == "cover" else ("assert", "assume")
+    unchecked = [a for a in lowered.assertions if a.kind in kinds and a.history_depth >= depth]
+    if unchecked:
+        names = ", ".join(f"{a.name} (needs depth > {a.history_depth})" for a in unchecked)
+        return (
+            f"BMC depth {depth} is too shallow: these are never checked within the bound: {names}. "
+            "Raise --depth or shorten the ##[m:n] / $past window."
+        )
     return None
 
 
@@ -338,15 +368,26 @@ def verify(
     reset_assume: bool = True,
     reset_cycles: int = 1,
     auto_cover: bool = True,
+    params: tuple[tuple[str, str], ...] = (),
 ) -> VerifyResult:
     """Verify ``sva_text`` against ``dut_path``'s module ``top`` and classify the result.
 
     A PASS is only reported when at least one ``assert`` was actually lowered and checked;
     a block whose asserts were all skipped by the lowerer is an ERROR, not a proof.
+
+    ``params`` are top-level parameter overrides (``chparam``) applied at elaboration; the
+    result records them because a proof at ``BIT_RATE=5000000`` says nothing about 9600.
     """
     started = time.monotonic()
     run_dir = prepare_run_dir(workdir, run_name)
     (run_dir / "attempt.sva").write_text(sva_text)
+    if params:
+        (run_dir / "params.txt").write_text("".join(f"{n}={v}\n" for n, v in params))
+
+    def error(message: str) -> VerifyResult:
+        (run_dir / "error.txt").write_text(message + "\n")
+        return _error_result(run_dir, message, depth=depth, mode=mode, started=started, params=params)
+
     try:
         _, lowered = prepare_sources(
             dut_path,
@@ -361,30 +402,29 @@ def verify(
             auto_cover=auto_cover,
         )
     except LowerError as exc:
-        (run_dir / "error.txt").write_text(f"SVA lowering error: {exc}\n")
-        return _error_result(run_dir, f"SVA lowering error: {exc}", depth=depth, mode=mode, started=started)
+        return error(f"SVA lowering error: {exc}")
     except InjectError as exc:
-        (run_dir / "error.txt").write_text(f"injection error: {exc}\n")
-        return _error_result(run_dir, f"injection error: {exc}", depth=depth, mode=mode, started=started)
+        return error(f"injection error: {exc}")
 
     if lowered is not None:
         clock = lowered.clock
-        nothing = _nothing_to_check(lowered, mode)
+        nothing = _nothing_to_check(lowered, mode, depth)
         if nothing is not None:
-            (run_dir / "error.txt").write_text(nothing + "\n")
-            result = _error_result(run_dir, nothing, depth=depth, mode=mode, started=started)
-            return replace(result, lowered=lowered)
+            return replace(error(nothing), lowered=lowered)
 
     files = (f"{top}.sv", *(p.name for p in extra_files))
     task = SbyTask("run", mode=mode, depth=depth, engine=engine, timeout_s=max(1, int(timeout_s)))
-    cfg = SbyConfig(top=top, files=files, tasks=(task,), frontend=frontend)
+    try:
+        cfg = SbyConfig(top=top, files=files, tasks=(task,), frontend=frontend, params=params)
+    except ValueError as exc:
+        return error(f"bad parameter override: {exc}")
     sby_file = run_dir / "run.sby"
     sby_file.write_text(cfg.render())
 
     try:
         rc, out, timed_out = run_sby(sby_file, timeout_s=timeout_s + _TIMEOUT_GRACE_S)
     except FileNotFoundError as exc:
-        return _error_result(run_dir, str(exc), depth=depth, mode=mode, started=started)
+        return _error_result(run_dir, str(exc), depth=depth, mode=mode, started=started, params=params)
 
     task_dir = run_dir / "run"
     log_path = task_dir / "logfile.txt"
@@ -407,6 +447,11 @@ def verify(
     trace = task_dir / "engine_0" / "trace.vcd"
     trace_path = trace if trace.exists() else None
     report_lines = [f"Result: {status}"]
+    if params:
+        report_lines.append(
+            "Parameters overridden at elaboration (result holds for these values only): "
+            + " ".join(f"{n}={v}" for n, v in params)
+        )
     if status == "FAIL":
         if mode == "cover" and unreached:
             report_lines.append("Unreached cover statements: " + ", ".join(unreached))
@@ -449,4 +494,5 @@ def verify(
         lowered=lowered,
         unreached_covers=unreached,
         reached_covers=reached,
+        params=params,
     )

@@ -27,6 +27,31 @@ def test_gate_extra_parser() -> None:
     assert args.extra == [Path("rtl/bar.v")]
 
 
+def test_param_flag_parses_and_validates() -> None:
+    from formalsynapse.cli import _parse_params
+
+    args = build_parser().parse_args(
+        ["gate", "--dut", "u.v", "--sva", "u.sva.sv", "--top", "u", "--param", "BIT_RATE=25000000", "--param", "N=2"]
+    )
+    assert _parse_params(args) == (("BIT_RATE", "25000000"), ("N", "2"))
+    base = ["verify", "--dut", "u.v", "--sva", "s", "--top", "u"]
+    args = build_parser().parse_args([*base, "--param", "N=1", "--param", "N=2"])
+    with pytest.raises(ValueError, match="twice"):
+        _parse_params(args)
+    args = build_parser().parse_args([*base, "--param", "N=rm -rf"])
+    with pytest.raises(ValueError):
+        _parse_params(args)
+
+
+def test_gate_param_requires_single_dut(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Suites are graded at shipped parameters; --param without --dut is refused before any sby."""
+    from formalsynapse import toolchain
+
+    monkeypatch.setattr(toolchain, "have_sby", lambda: True)
+    rc = main(["gate", "--only", "counter", "--param", "WIDTH=4", "--workdir", str(tmp_path)])
+    assert rc == 2
+
+
 def test_generate_assertllm2_parser() -> None:
     args = build_parser().parse_args(
         ["generate", "--suite", "assertllm2", "--only", "versatile_counter", "--out", "cand.sva.sv"]

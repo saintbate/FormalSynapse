@@ -7,11 +7,26 @@ caller is responsible for running ``sby`` with the config's directory as the wor
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
 Mode = Literal["bmc", "prove", "cover", "live"]
 Frontend = Literal["verilog", "slang"]
+
+# ``chparam -set NAME VALUE`` values: integers, sized literals, real numbers, quoted strings.
+_PARAM_VALUE = re.compile(r"^(?:-?\d[\d_]*(?:\.\d+)?|\d*'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ?]+|\"[^\"\s]*\")$")
+
+
+def parse_param(text: str) -> tuple[str, str]:
+    """``NAME=VALUE`` -> ``(NAME, VALUE)`` with both halves validated for the sby script."""
+    name, sep, value = text.partition("=")
+    name, value = name.strip(), value.strip()
+    if not sep or not name.isidentifier():
+        raise ValueError(f"parameter override must be NAME=VALUE with an identifier name: {text!r}")
+    if not _PARAM_VALUE.match(value):
+        raise ValueError(f"parameter value must be a number, sized literal or \"string\": {text!r}")
+    return name, value
 
 
 @dataclass(frozen=True)
@@ -45,10 +60,19 @@ class SbyConfig:
     defines: tuple[str, ...] = ("FORMAL",)
     multiclock: bool = False
     extra_script: tuple[str, ...] = field(default_factory=tuple)
+    # Top-level parameter overrides, applied with ``chparam`` before ``prep``. Lets a DUT whose
+    # shipped parameters put its behavior thousands of cycles out (a 9600-baud divider) be
+    # elaborated so the same properties are observable within the BMC bound.
+    params: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.top.isidentifier():
             raise ValueError(f"top must be an identifier: {self.top!r}")
+        for name, value in self.params:
+            parse_param(f"{name}={value}")
+        pnames = [n for n, _ in self.params]
+        if len(set(pnames)) != len(pnames):
+            raise ValueError(f"duplicate parameter overrides: {pnames}")
         if not self.files:
             raise ValueError("at least one source file is required")
         for f in self.files:
@@ -103,6 +127,8 @@ class SbyConfig:
 
         lines.append("[script]")
         lines.extend(self.read_command().splitlines())
+        for name, value in self.params:
+            lines.append(f"chparam -set {name} {value} {self.top}")
         lines.append(f"prep -top {self.top}")
         lines.extend(self.extra_script)
         lines.append("")

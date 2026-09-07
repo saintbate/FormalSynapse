@@ -22,7 +22,7 @@ from formalsynapse.gate import GateReport, evaluate, write_report
 from formalsynapse.generator import VLLMGenerator, ping
 from formalsynapse.mutate import Mutant
 from formalsynapse.paths import default_output_dir, default_workdir, golden_dir, smoke_dir
-from formalsynapse.sby_config import Frontend, Mode
+from formalsynapse.sby_config import Frontend, Mode, parse_param
 from formalsynapse.vcd_parser import VcdError, build_report, load_vcd
 from formalsynapse.verify_harness import VerifyResult, verify
 
@@ -132,10 +132,31 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+_PARAM_HELP = (
+    "override a top-level parameter at elaboration (repeatable, e.g. --param BIT_RATE=5000000); "
+    "the result is reported as holding for those values only"
+)
+
+
+def _parse_params(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
+    """``--param NAME=VALUE`` (repeatable) -> validated ``chparam`` overrides."""
+    raw = [p for p in (getattr(args, "param", None) or []) if p.strip()]
+    params = tuple(parse_param(p) for p in raw)
+    names = [n for n, _ in params]
+    if len(set(names)) != len(names):
+        raise ValueError(f"--param given twice for: {sorted({n for n in names if names.count(n) > 1})}")
+    return params
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     if not toolchain.have_sby():
         _print("sby/yosys/z3 not found; run scripts/install_toolchain.sh && source scripts/env.sh")
         return 1
+    try:
+        params = _parse_params(args)
+    except ValueError as exc:
+        _print(str(exc))
+        return 2
     result = verify(
         Path(args.dut),
         Path(args.sva).read_text(),
@@ -150,6 +171,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         strict=bool(args.strict),
         reset_assume=not args.no_reset_assume,
         reset_cycles=max(1, int(args.reset_cycles)),
+        params=params,
     )
     _print(result.summary())
     _print(result.report)
@@ -456,6 +478,7 @@ def _print_gate_table(rows: list[GateReport]) -> None:
             f"{len(report.valid_mutants):>7}  "
             f"{report.killed:>6}  "
             f"{100.0 * report.kill_rate:5.1f}%"
+            + (f"  [{report.prove.params_text}]" if report.params else "")
         )
 
 
@@ -523,6 +546,15 @@ def cmd_gate(args: argparse.Namespace) -> int:
     rows: list[GateReport] = []
     failed = 0
     not_evaluated: list[str] = []
+    try:
+        params = _parse_params(args)
+    except ValueError as exc:
+        _print(str(exc))
+        return 2
+    if params and args.dut is None:
+        # Suites are graded at shipped parameters so their numbers stay comparable.
+        _print("--param applies to a single --dut; suites run at the DUT's own parameters")
+        return 2
 
     if args.suite == "assertllm2":
         root = Path(args.root) if args.root else assertllm2_default_root()
@@ -609,7 +641,10 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 not_evaluated.append(name)
                 continue
             block_dir = workdir / f"gate-{name}"
-            _print(f"[{name}] prove + cover + COI + mutation ({args.max_mutants} mutants)")
+            what = f"prove + cover + COI + mutation ({args.max_mutants} mutants)"
+            if params:
+                what += " with " + " ".join(f"{n}={v}" for n, v in params)
+            _print(f"[{name}] {what}")
             report = evaluate(
                 dut,
                 sva_path,
@@ -622,6 +657,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 run_cover=not args.no_cover,
                 extra_files=extras,
                 strict=not args.trusted,
+                params=params,
             )
             write_report(report, block_dir / "gate.json")
             _print_gate_report(name, report)
@@ -650,6 +686,7 @@ def _print_gate_report(name: str, report: GateReport) -> None:
         f"[{name}] prove={report.prove.status} cover={_cover_cell(report)} "
         f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
         f"({100.0 * report.kill_rate:.0f}%)"
+        + (f" params: {report.prove.params_text}" if report.params else "")
     )
     if report.prove.status != "PASS" and report.prove.errors:
         _print(f"  {report.prove.errors[0][:400]}")
@@ -678,6 +715,8 @@ def gate_markdown(rows: list[GateReport], *, min_kill: float, failed: int) -> st
             notes.append(f"{len(r.skipped)} skipped")
         if r.prove.lowered is not None and r.prove.lowered.reset is None:
             notes.append("no reset assumed")
+        if r.params:
+            notes.append("params: " + r.prove.params_text)
         lines.append(
             f"| {r.block} | {r.prove.status} | {_cover_cell(r)} | {r.coi.coverage:.2f} | "
             f"{len(r.valid_mutants)} | {r.killed} | {100.0 * r.kill_rate:.0f}% | {'; '.join(notes)} |"
@@ -723,6 +762,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not hold the DUT reset active at step 0 (default: assume it, like a testbench)",
     )
     verify_p.add_argument("--reset-cycles", type=int, default=1, help="cycles the reset is held (default 1)")
+    verify_p.add_argument("--param", action="append", default=None, metavar="NAME=VALUE", help=_PARAM_HELP)
 
     golden = sub.add_parser("golden", help="prove every block in benchmarks/golden")
     golden.add_argument("--depth", type=int, default=20)
@@ -757,6 +797,9 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--sva", type=Path, default=None, help="candidate SVA file, or a directory of <name>.sva.sv")
     gate.add_argument("--top", default=None)
     gate.add_argument("--extra", action="append", type=Path, default=None, help="extra compile units (repeatable)")
+    gate.add_argument(
+        "--param", action="append", default=None, metavar="NAME=VALUE", help=_PARAM_HELP + " (--dut only)"
+    )
     gate.add_argument("--only", nargs="*", default=None, help="restrict to these block / design names")
     gate.add_argument("--depth", type=int, default=20)
     gate.add_argument("--timeout", type=float, default=60.0)

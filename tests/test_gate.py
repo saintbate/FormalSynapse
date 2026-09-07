@@ -134,6 +134,28 @@ def test_evaluate_monkeypatched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert js["vacuous"] == [] and js["skipped"] == []
 
 
+def test_params_reach_every_run_and_the_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    from formalsynapse import gate as gate_mod
+
+    dut = tmp_path / "counter.sv"
+    dut.write_text(RTL)
+    seen: list[tuple[str, object]] = []
+
+    def fake_verify(dut_path: Path, sva_text: str, top: str, **kwargs: object) -> VerifyResult:
+        seen.append((str(kwargs.get("run_name", "")), kwargs.get("params")))
+        status = "FAIL" if str(kwargs.get("run_name", "")).startswith("mutant") else "PASS"
+        return replace(_result(status), params=(("WIDTH", "4"),))
+
+    monkeypatch.setattr(gate_mod, "verify", fake_verify)
+    report = evaluate(dut, SVA, "counter", tmp_path / "work", max_mutants=2, params=(("WIDTH", "4"),))
+    assert seen and all(p == (("WIDTH", "4"),) for _, p in seen)
+    assert {name for name, _ in seen} >= {"prove", "cover"}
+    assert report.params == (("WIDTH", "4"),)
+    assert report_json(report)["params"] == {"WIDTH": "4"}
+
+
 def test_failed_prove_scores_no_kills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An SVA that FAILs on golden RTL fails on every mutant; those must not count as kills."""
     from formalsynapse import gate as gate_mod

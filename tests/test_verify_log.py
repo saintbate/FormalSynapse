@@ -51,11 +51,22 @@ def test_vacuous_assertions_come_from_auto_covers() -> None:
 
 def test_nothing_to_check_rules() -> None:
     covers_only = lower("c_en: cover property (@(posedge clk) disable iff (!rst_n) en);")
-    msg = _nothing_to_check(covers_only, "bmc")
+    msg = _nothing_to_check(covers_only, "bmc", 20)
     assert msg is not None and "nothing to prove" in msg
-    assert _nothing_to_check(covers_only, "cover") is None
+    assert _nothing_to_check(covers_only, "cover", 20) is None
     invariant = lower("a_x: assert property (@(posedge clk) disable iff (!rst_n) count <= 4'hF);")
-    assert _nothing_to_check(invariant, "bmc") is None
-    assert _nothing_to_check(invariant, "cover") == "no cover statements to check"
+    assert _nothing_to_check(invariant, "bmc", 20) is None
+    assert _nothing_to_check(invariant, "cover", 20) == "no cover statements to check"
     implication = lower("a_x: assert property (@(posedge clk) disable iff (!rst_n) en |=> count != 0);")
-    assert _nothing_to_check(implication, "cover") is None  # auto-cover of the antecedent
+    assert _nothing_to_check(implication, "cover", 20) is None  # auto-cover of the antecedent
+
+
+def test_nothing_to_check_flags_a_bound_too_shallow_for_the_guard() -> None:
+    """Guard depth 12 (|=> ##10 plus the reset sample) never fires in a 12-step BMC."""
+    late = lower("a_late: assert property (@(posedge clk) disable iff (!rst_n) en |=> ##10 done);")
+    depth = next(a.history_depth for a in late.assertions if a.name == "a_late")
+    msg = _nothing_to_check(late, "bmc", depth)
+    assert msg is not None and "too shallow" in msg and f"a_late (needs depth > {depth})" in msg
+    assert _nothing_to_check(late, "bmc", depth + 1) is None
+    # the antecedent auto-cover only needs the antecedent's own history, so cover mode is fine
+    assert _nothing_to_check(late, "cover", 3) is None

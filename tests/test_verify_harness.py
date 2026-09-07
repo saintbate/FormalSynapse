@@ -156,6 +156,71 @@ def test_range_consequent_is_checked_within_bound(tmp_path: Path) -> None:
 
 
 @skip_no_sby
+def test_bound_too_shallow_is_error_not_pass(tmp_path: Path) -> None:
+    """A check gated to cycle >= 12 never fires in a 10-step BMC; sby would say PASS."""
+    dut = tmp_path / "counter.sv"
+    dut.write_text(COUNTER)
+    sva = "a_late: assert property (@(posedge clk) disable iff (!rst_n) up |=> ##10 (count == 4'd9));\n"
+    shallow = verify(dut, sva, "counter", depth=10, timeout_s=60.0, workdir=tmp_path, run_name="s")
+    assert shallow.status == "ERROR"
+    assert "too shallow" in shallow.report and "a_late" in shallow.report
+    deep = verify(dut, sva, "counter", depth=16, timeout_s=60.0, workdir=tmp_path, run_name="d")
+    assert deep.status == "FAIL", deep.report  # actually checked now, and it is false
+
+
+PARAM_COUNTER = """\
+module pcounter #(
+    parameter int LIMIT = 200
+) (
+    input  logic       clk,
+    input  logic       rst_n,
+    input  logic       en,
+    output logic       done
+);
+    logic [7:0] n;
+    always_ff @(posedge clk) begin
+        if (!rst_n) n <= 8'd0;
+        else if (en && n != LIMIT[7:0]) n <= n + 8'd1;
+    end
+    assign done = (n == LIMIT[7:0]);
+endmodule
+"""
+
+
+@skip_no_sby
+def test_param_override_is_applied_and_reported(tmp_path: Path) -> None:
+    """At LIMIT=200 ``done`` is unreachable in 12 steps; at LIMIT=3 it is reached, and the result
+    says which elaboration it holds for."""
+    dut = tmp_path / "pcounter.sv"
+    dut.write_text(PARAM_COUNTER)
+    sva = "c_done: cover property (@(posedge clk) disable iff (!rst_n) done);\n"
+    shipped = verify(dut, sva, "pcounter", depth=12, timeout_s=60.0, workdir=tmp_path, mode="cover", run_name="a")
+    assert shipped.status == "FAIL", shipped.report
+    assert shipped.params == ()
+    small = verify(
+        dut,
+        sva,
+        "pcounter",
+        depth=12,
+        timeout_s=60.0,
+        workdir=tmp_path,
+        mode="cover",
+        run_name="b",
+        params=(("LIMIT", "3"),),
+    )
+    assert small.status == "PASS", small.report
+    assert small.params == (("LIMIT", "3"),)
+    assert "LIMIT=3" in small.summary() and "LIMIT=3" in small.report
+    assert (small.run_dir / "params.txt").read_text() == "LIMIT=3\n"
+    assert "chparam -set LIMIT 3 pcounter" in (small.run_dir / "run.sby").read_text()
+    bogus = verify(
+        dut, sva, "pcounter", depth=12, timeout_s=60.0, workdir=tmp_path, mode="cover", run_name="c",
+        params=(("NOPE", "1"),),
+    )
+    assert bogus.status == "ERROR" and "NOPE" in bogus.report
+
+
+@skip_no_sby
 def test_nothing_lowered_is_error_not_pass(tmp_path: Path) -> None:
     dut = tmp_path / "counter.sv"
     dut.write_text(COUNTER)

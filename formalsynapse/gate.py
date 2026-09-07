@@ -174,6 +174,11 @@ class GateReport:
         return self.prove.skipped
 
     @property
+    def params(self) -> tuple[tuple[str, str], ...]:
+        """Parameter overrides the DUT was elaborated with; the whole gate holds only for them."""
+        return self.prove.params
+
+    @property
     def passed(self) -> bool:
         prove_ok = self.prove.status == "PASS"
         cover_ok = self.vacuity_ok is not False
@@ -266,6 +271,7 @@ def score_kill(
     clock: str = "clk",
     mutant_root: Path | None = None,
     strict: bool = False,
+    params: tuple[tuple[str, str], ...] = (),
 ) -> KillReport:
     """Run the SVA against each mutant. A FAIL is a kill; a PASS is a miss."""
     rtl = dut.read_text(encoding="utf-8")
@@ -295,6 +301,7 @@ def score_kill(
             extra_files=extra_files,
             clock=clock,
             strict=strict,
+            params=params,
         )
         outcomes.append(MutantOutcome(mutant=mutant, result=result))
     return KillReport(mutants=tuple(outcomes))
@@ -315,13 +322,15 @@ def evaluate(
     extra_files: tuple[Path, ...] = (),
     clock: str = "clk",
     strict: bool = False,
+    params: tuple[tuple[str, str], ...] = (),
 ) -> GateReport:
     """Run prove + cover (vacuity) + COI + mutation kill on one pair.
 
     Every assert's antecedent gets an automatic cover, so the cover run is always meaningful
     when the block has an implication: an unreachable antecedent fails the gate. ``mutants``
     overrides the cheap local mutator (used for AssertLLM2 shipped mutants). ``strict``
-    rejects ``assume``/verbatim (use it for anything a model wrote).
+    rejects ``assume``/verbatim (use it for anything a model wrote). ``params`` overrides
+    top-level parameters for prove, cover and every mutant alike; the report carries them.
     """
     rtl = dut.read_text(encoding="utf-8")
     sva_text = sva.read_text(encoding="utf-8") if isinstance(sva, Path) else sva
@@ -339,6 +348,7 @@ def evaluate(
         extra_files=extra_files,
         clock=clock,
         strict=strict,
+        params=params,
     )
     cover_result: VerifyResult | None = None
     if run_cover and prove.status == "PASS" and _has_cover_checks(prove, sva_text):
@@ -354,6 +364,7 @@ def evaluate(
             extra_files=extra_files,
             clock=clock,
             strict=strict,
+            params=params,
         )
     coi = coi_report(rtl, top, sva_text)
     # An SVA that fails on the golden RTL fails on every mutant too; those are not kills.
@@ -373,6 +384,7 @@ def evaluate(
             timeout_s=timeout_s,
             clock=clock,
             strict=strict,
+            params=params,
         )
         outcomes = kill.mutants
     return GateReport(
@@ -396,6 +408,7 @@ def report_json(report: GateReport) -> dict[str, object]:
         "unreached_covers": list(report.cover.unreached_covers) if report.cover is not None else [],
         "skipped": list(report.skipped),
         "reset_assumed": report.prove.lowered.reset if report.prove.lowered is not None else None,
+        "params": dict(report.params),
         "coi": asdict(report.coi),
         "mutants": len(report.mutants),
         "valid_mutants": len(report.valid_mutants),
