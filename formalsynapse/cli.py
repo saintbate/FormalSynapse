@@ -33,7 +33,10 @@ def _print(msg: str) -> None:
 
 
 def _print_suite_attempt(name: str, att: Attempt) -> None:
-    _print(f"[{name}] turn {att.turn}: {att.result.summary()}")
+    if att.turn == 0:  # DUT smoke run, before any LLM call
+        _print(f"[{name}] DUT smoke: {att.result.summary()} (design does not elaborate; no LLM calls made)")
+    else:
+        _print(f"[{name}] turn {att.turn}: {att.result.summary()}")
     if att.vacuous:
         _print(f"  vacuous (antecedent unreachable): {', '.join(att.vacuous)}")
     if att.valid_mutants:

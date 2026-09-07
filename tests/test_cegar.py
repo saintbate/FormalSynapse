@@ -395,6 +395,29 @@ def test_canonical_sva_drops_reasoning_comments_but_keeps_checks() -> None:
     assert mod._canonical_or_raw(noisy) == (clean, True)
 
 
+def test_dut_smoke_failure_makes_no_llm_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+
+    calls: list[str] = []
+
+    def fake_verify(_dut: Path, sva: str, *_a: object, **kw: object) -> VerifyResult:
+        calls.append(str(kw.get("run_name")))
+        assert "a_fsyn_smoke" in sva
+        return _result("ERROR", report="Can not open file `` for $readmemh.")
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t(input clk);\nendmodule\n")
+    spec.write_text("1. x\n")
+    gen = Scripted([])  # any generate() call would IndexError
+    traj = run_block(dut_path=dut, spec_path=spec, top="t", generator=gen, workdir=tmp_path, max_feedback=3)
+    assert calls == ["cegar-t-smoke"] and gen.seen == []
+    assert traj.status == "ERROR" and traj.turns == 1 and traj.attempts[0].turn == 0
+    assert traj.attempts[0].result.report.startswith("DUT smoke failed")
+    assert traj.winner is not None and not traj.ok
+
+
 def test_drop_duplicates_keeps_proven_copy() -> None:
     from formalsynapse.sva_edit import drop_duplicates
 

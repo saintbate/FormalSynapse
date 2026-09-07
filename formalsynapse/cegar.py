@@ -320,6 +320,11 @@ def _has_covers(result: VerifyResult) -> bool:
     return lowered is not None and any(a.kind == "cover" for a in lowered.assertions)
 
 
+def smoke_sva(clock: str) -> str:
+    """A trivially true assert: proves nothing about the DUT, only that it elaborates under sby."""
+    return f"`ifdef FORMAL\na_fsyn_smoke: assert property (@(posedge {clock}) 1'b1);\n`endif\n"
+
+
 HISTORY_PAIRS = 1
 
 
@@ -350,11 +355,14 @@ def run_block(
     max_mutants: int = 8,
     mutants: Sequence[Mutant] | None = None,
     on_attempt: Callable[[Attempt], None] | None = None,
+    smoke: bool = True,
 ) -> Trajectory:
     """Zero-shot + up to ``max_feedback`` repairs. ``candidates`` is sby-graded best-of-N.
 
     After a BMC PASS, ``min_kill > 0`` scores mutation kill and keeps sampling if
     the rate is below the bar. ``min_kill == 0`` is prove-only (legacy CEGAR).
+    ``smoke`` runs the DUT once with a trivial assert first; a DUT that does not elaborate
+    yields a single turn-0 ERROR attempt and no LLM calls.
     """
     started = time.monotonic()
     rtl = dut_path.read_text()
@@ -378,6 +386,33 @@ def run_block(
     kept = ""
     max_turns = 1 + max(0, max_feedback)
     n_cand = max(1, candidates)
+    if smoke and ctx.clock:
+        # One sby run on a trivially true assert before any LLM call: a DUT that does not
+        # elaborate ($readmemh "", missing include, unsupported construct) is the design's
+        # failure, not the model's, and must not burn max_turns x candidates of sampling.
+        smoke_result = verify(
+            dut_path,
+            smoke_sva(ctx.clock),
+            top,
+            depth=min(depth, 3),  # > the reset guard; elaboration cost dominates anyway
+            timeout_s=timeout_s,
+            workdir=workdir,
+            run_name=f"cegar-{top}-smoke",
+            extra_files=extra_files,
+            strict=True,
+        )
+        if smoke_result.status == "ERROR":
+            att = Attempt(0, "", replace(smoke_result, report="DUT smoke failed: " + smoke_result.report))
+            if on_attempt is not None:
+                on_attempt(att)
+            return Trajectory(
+                block=dut_path.parent.name,
+                top=top,
+                prompt=user0,
+                attempts=(att,),
+                elapsed_s=time.monotonic() - started,
+                system=messages[0].content,
+            )
     for turn in range(1, max_turns + 1):
         sample_temp = 0.5 if n_cand > 1 else None
         messages = _trim_history(messages)
