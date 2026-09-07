@@ -66,6 +66,31 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
 - Each golden block ships a `.sby` with `bmc`, `cover` (antecedent reachability / non-vacuity) and, where
   it converges, `prove` tasks.
 
+## What a PASS means
+
+`sby` is the only grader, and the harness is built so that a PASS cannot be cheaper than a proof:
+
+- **Reset.** The DUT's reset (name and polarity from `formalsynapse.design_context`) is held active at
+  step 0 (`initial assume(!rst_n)`), and every check starts at cycle 1, so pre-reset register garbage
+  cannot produce a spurious FAIL or a spurious cover hit. `fsyn verify --no-reset-assume` /
+  `--reset-cycles N` override this.
+- **Every assert is checked within the bound.** `##[m:n]` and `$past` history only push a check to the
+  deepest read it needs (`max`, not `sum`), so `req |=> ##[0:10] gnt` is live from cycle 11 at depth 20.
+- **Nothing skipped counts.** If the lowerer cannot translate a statement it is listed under
+  "Not proven" in the report; a block whose asserts were all skipped is an ERROR, not a PASS.
+- **Candidates cannot constrain the environment.** Strict lowering (the default for CEGAR and `fsyn
+  gate`) rejects `assume property` and `fsyn:verbatim`. `fsyn gate --trusted` re-enables them for
+  hand-written blocks.
+- **Vacuity is checked, not optional.** Every assert with an implication gets an automatic cover of its
+  antecedent (`<label>__cov`). `fsyn gate` runs cover whenever there is one, and CEGAR treats an
+  unreachable antecedent as a failure: the vacuous label is stripped and the model is asked again.
+- **Only real signals.** Yosys turns an identifier the DUT does not declare into a free, undriven wire;
+  the harness reads that warning and reports ERROR for any name the SVA introduced (a candidate's
+  `disable iff (!rst_n)` on a DUT whose reset is `reset`, or that has none, is not a proof). A DUT
+  without a reset port gets a prompt that forbids `disable iff` instead of one that invents `rst_n`.
+- **Kills need a proof first.** `fsyn gate` scores mutation only after prove and cover PASS; an SVA
+  that fails on the golden RTL fails on every mutant, and that is not a kill rate.
+
 ## Repository layout
 
 ```

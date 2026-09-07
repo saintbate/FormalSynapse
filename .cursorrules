@@ -15,7 +15,10 @@ Do not edit a file that Kilo is currently iterating on; wait for its diff to lan
 - Verilog: every `.sv` must pass `verilator --lint-only -Wall`. Every `.sby` in `benchmarks/` must exit 0.
 
 ## Toolchain facts (do not assume otherwise)
-- Tools come from the OSS CAD Suite under `tools/oss-cad-suite/` (run `source scripts/env.sh`).
+- Tools come from the OSS CAD Suite under `$HOME/.local/opt/oss-cad-suite` (`FSYN_TOOLCHAIN_DIR`;
+  run `source scripts/env.sh`). It lives outside the repo because this workspace path contains `:`.
+- The grader assumes the DUT reset is active at step 0 and checks from cycle 1; strict lowering
+  rejects `assume`/verbatim in generated candidates; every implication gets an antecedent cover.
 - Open-source Yosys `read_verilog -sv -formal` supports only immediate assertions.
   Concurrent SVA (`property/endproperty`, `|->`, `|=>`, `##[m:n]`, `disable iff`, `$past/$rose/$fell/$stable`)
   is compiled through the `yosys-slang` frontend: `plugin -i slang` then `read_slang -D FORMAL ...`.

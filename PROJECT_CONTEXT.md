@@ -220,10 +220,82 @@ on `ben-marshall/uart` `uart_tx` (RTL checked out in CI, SVA in
 `examples/uart_tx/`). External repos checkout this tree into `.fsyn` and
 call `.github/actions/fsyn-gate` with their DUT/SVA/top.
 
+### Grader audit (after weeks 5–6)
+
+A code review of the lowerer and harness found four ways an `sby PASS` could be
+reported without a proof. All numbers above this section were produced by the
+old grader and are **not comparable** with anything produced after it; treat
+them as history, not baselines.
+
+1. **No reset assumption.** BMC started from an arbitrary register state, so
+   properties without `disable iff` (or with `|->` on the first sample) failed
+   spuriously, and covers were "reached" from pre-reset garbage. The lowerer now
+   emits `initial assume(<reset active>)` (name and polarity from
+   `design_context`, override with `--no-reset-assume` / `--reset-cycles`) and
+   every check is gated to cycle >= 1.
+2. **Guard depth summed instead of maxed.** `req |=> ##[0:10] gnt` was gated to
+   cycle >= 21 and never checked at BMC depth 20 (silent PASS). Fixed; test
+   `test_range_consequent_is_checked_within_bound` is the regression.
+3. **Skipped asserts became a PASS.** Unsupported constructs were turned into
+   comments; a block whose every assert was skipped still reported PASS. Now
+   `verify` returns ERROR ("nothing to prove") and skipped items are listed in
+   every report. CEGAR's `proven` uses the lowered assert list, not a regex.
+4. **`assume` / verbatim could make anything pass.** `strict` lowering (default
+   for CEGAR and `fsyn gate`; `--trusted` opts out for hand-written blocks)
+   rejects `assume property` and `fsyn:verbatim` in candidates.
+
+Vacuity is no longer opt-in: every assert with an implication gets an
+auto-cover of its antecedent (`<label>__cov`), the gate always runs cover
+when there is one, and CEGAR runs cover after each BMC PASS, strips vacuous
+labels in Python, and asks for replacements. `Trajectory.ok` means proven and
+non-vacuous, not "sby exited 0".
+
+Also fixed: cover-label parsing (was reading the module name), `__c1`
+labels mapping back to their source label for strip, mutants on the DUT's
+actual clock/reset lines, NBA vs relational `<=` after `if (...)`, string
+literals in comment stripping / `endmodule` search / mutation, `` `else ``
+branches of `ifdef FORMAL` kept when stripping, `$fatal` / `begin...end`
+action blocks in `strip_labels`, `#(...)` headers and `a, b, c` declarations
+in `design_context`, missing `--extra` files as ERROR, sby's own timeout +
+process-group kill, and CEGAR history trimmed to the last exchange.
+
+Re-gating the saved outputs with the fixed grader found two more holes:
+
+5. **Undeclared signals were free wires.** Yosys turns an identifier the DUT
+   does not declare into an implicitly declared, undriven wire. The AssertLLM2
+   `present_cipher_encryption_core` and `uart` candidates wrote
+   `disable iff (!rst_n)` against DUTs that have no `rst_n` (the cipher has no
+   reset at all; the uart's is `reset`, active-high). `verify` now reads Yosys's
+   "implicitly declared" warnings and reports ERROR for any such name that the
+   SVA introduced. The prompt no longer invents `rst_n` either: a DUT without a
+   reset port gets a system prompt that forbids `disable iff`, and the lowerer's
+   fallback disable is the DUT's real reset or nothing.
+6. **Kills were scored on a failed prove.** An SVA that FAILs on the golden RTL
+   fails on every mutant; `fsyn gate` was printing that as `kill=8/8`. Mutation
+   is now scored only after prove PASS and cover PASS.
+
+Also: `design_context` reads non-ANSI port lists (`module m(a, b); input a;`),
+which is how the uart's reset had gone undetected; `fsyn gate --sva <dir>` grades
+the blocks it has and lists the missing ones instead of aborting.
+
+Re-gate with the fixed grader (BMC 20, 8 mutants, `--min-kill 0.25`):
+
+| set | result |
+|---|---|
+| golden hand-written SVA, 10 blocks | 10/10 prove+cover PASS; kill 100% on 7, `rr_arbiter` 8/8, `onehot_fsm` 1/2, `spi_master` 2/6 |
+| `examples/uart_tx` (ben-marshall/uart) | prove+cover PASS, kill 0/7 (frame-timing mutants are ~5k cycles out at 9600 baud; CI gates prove+cover only) |
+| saved CodeV-14B golden candidates, 8 of 10 | 2/8 pass the bar (`counter` 8/8, `edge_detector` 1/1); `onehot_fsm` proves but kills 0/2; 5 ERROR on prose/undefined-macro output |
+| saved AssertLLM2 candidates, 4 | `versatile_counter` PASS 3/8 (38%) unchanged; `uart` and `present_cipher` now ERROR (invented `rst_n`, item 5); `programmable_interval_timer` FAIL (`a_counter_reset` @ step 2, genuine) |
+
+The old `present_cipher` "PASS 1/7" row above is therefore withdrawn. The 14B
+candidate files were saved before extraction was fixed and contain the model's
+reasoning; the gate's extractor recovers the block when there is one.
+
 ### Weeks 7–9
 
-RWOPD-style distillation with kill-weighted filtering on one H200. Release the adapter and
-the dataset.
+Re-run the golden CEGAR / AssertLLM2 generate rows with the fixed grader before
+any distillation. RWOPD-style distillation with kill-weighted filtering on one
+H200. Release the adapter and the dataset.
 
 ## 7. Long term
 

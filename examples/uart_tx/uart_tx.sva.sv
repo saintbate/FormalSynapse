@@ -1,5 +1,12 @@
 // Hand-written SVA for ben-marshall/uart uart_tx (pinned in .github/workflows/gate.yml).
-// Port-only, BMC depth 20. |=> so the first sample is after a clock (txd_reg init is 0).
+// Port-only, BMC depth 20. The harness holds resetn low at step 0, so |-> is safe here too;
+// |=> is kept because txd_reg lags the FSM by one cycle (start bit shows up at ##1).
+//
+// Gate result (grader after the reset/guard/vacuity audit): prove PASS, cover PASS, kill 0/7.
+// The 0/7 is real, not a grader gap: every mutant the open mutator finds in this DUT hits the
+// bit/cycle counters, and at the default 9600 baud / 50 MHz one bit is 5208 cycles, so no
+// depth-20 BMC property can observe frame timing. The CI job therefore gates on prove+cover
+// only (min-kill 0) and reports the kill rate for information.
 `ifdef FORMAL
 property p_uart_tx_idle_high;
     @(posedge clk) disable iff (!resetn)
