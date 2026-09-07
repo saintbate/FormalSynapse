@@ -343,8 +343,20 @@ def _generate_jobs(args: argparse.Namespace) -> list[GenerateJob] | None:
             _print("no open AssertLLM2 designs selected")
             return None
         return jobs
+    if getattr(args, "suite", None) == "golden":
+        blocks = _golden_blocks()
+        if args.only:
+            only = set(args.only)
+            blocks = [b for b in blocks if b.name in only]
+        if not blocks:
+            _print("no golden blocks selected")
+            return None
+        return [
+            GenerateJob(name=b.name, dut=b / f"{b.name}.sv", spec=b / f"{b.name}.spec.md", top=b.name, extras=extras)
+            for b in blocks
+        ]
     if args.block is None:
-        _print("pass a block path or --suite assertllm2 --only <name>")
+        _print("pass a block path, --suite golden, or --suite assertllm2 --only <name>")
         return None
     block = Path(args.block)
     if block.is_dir():
@@ -841,12 +853,12 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--extra", action="append", type=Path, default=None, help="extra compile units (repeatable)")
     gen.add_argument(
         "--suite",
-        choices=("assertllm2",),
+        choices=("golden", "assertllm2"),
         default=None,
-        help="generate against an AssertLLM2 checkout instead of a local block",
+        help="generate for every benchmarks/golden block, or against an AssertLLM2 checkout",
     )
     gen.add_argument("--root", type=Path, default=None, help="AssertLLM2 repo root (or FSYN_ASSERTLLM2_ROOT)")
-    gen.add_argument("--only", nargs="*", default=None, help="restrict AssertLLM2 generation to these names")
+    gen.add_argument("--only", nargs="*", default=None, help="restrict suite generation to these names")
     gen.add_argument("--max-feedback", type=int, default=MAX_FEEDBACK)
     gen.add_argument("--out", type=Path, default=None, help="write the last SVA attempt here")
     gen.add_argument(

@@ -25,36 +25,65 @@ module shift_register (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_shift_register_load: assert property (p_shift_register_load)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past(load, 1))
         a_shift_register_load: assert((q == $past(pdata)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_shift_register_load__cov: cover((load));
+    end
+  end
   // a_shift_register_shift: assert property (p_shift_register_shift)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd3 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((!load && shift), 1))
         a_shift_register_shift: assert((q == {$past(sin), $past(q[7:1])}));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_shift_register_shift__cov: cover(((!load && shift)));
+    end
+  end
   // a_shift_register_hold: assert property (p_shift_register_hold)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((!load && !shift), 1))
         a_shift_register_hold: assert((q == $past(q)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_shift_register_hold__cov: cover(((!load && !shift)));
+    end
+  end
+  // a_shift_register_reset: assert property (p_shift_register_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_shift_register_reset: assert((q == 8'd0));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_shift_register_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_shift_register_load: cover property (@(posedge clk) disable iff (!rst_n) load);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_shift_register_load: cover((load));
     end
   end
   // c_shift_register_shift: cover property (@(posedge clk) disable iff (!rst_n) !load && shift);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_shift_register_shift: cover((!load && shift));
     end
   end

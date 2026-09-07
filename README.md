@@ -42,7 +42,7 @@ fsyn gate --only counter
 # fsyn gate --suite assertllm2 --root ~/src/AssertLLM2 --list
 # fsyn generate --suite assertllm2 --only versatile_counter --out cand.sva.sv
 # fsyn gate --suite assertllm2 --root ~/src/AssertLLM2 --only versatile_counter --sva cand.sva.sv
-# fsyn gate --sva ~/.cache/formalsynapse/output/cegar-14b-sva   # generated golden candidates
+# fsyn gate --sva ~/.cache/formalsynapse/output/<run>/sva     # re-gate a directory of generated candidates
 
 # 5. Verify a candidate SVA against a DUT
 fsyn verify --dut benchmarks/golden/sync_fifo/sync_fifo.sv --top sync_fifo \
@@ -95,6 +95,11 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
   with `--depth` and reports ERROR naming the labels that could never have been checked.
 - **Parameter overrides are part of the result.** `--param` changes what was proven; the summary,
   report and JSON say which values the result holds for.
+- **Mutants cover the bug classes a property is supposed to catch.** Operator swaps (`&&`/`||`,
+  `==`/`!=`, `<`/`>`/`<=`/`>=` including off-by-one, `+`/`-`), `if` polarity, constant flips
+  (`4'd0 -> 4'd1`, wrong reset values included) and adjacent `case`-arm swaps. Loop headers,
+  parameters and `initial` values are never mutated. The golden suite kills 100% on nine blocks and
+  6/8 on `spi_master` (two equivalent mutants) with these operators.
 
 ## Repository layout
 
@@ -197,8 +202,9 @@ mutant survives. `params` (CLI: `--param NAME=VALUE`, yosys `chparam`) elaborate
 different values for prove, cover and every mutant. The report, the JSON and the step summary all
 carry the values, because a proof at `BIT_RATE=25000000` says nothing about 9600 baud. Suites
 (`--suite golden|assertllm2`) refuse `--param` so their numbers stay comparable across runs.
-`examples/uart_tx/uart_tx.sva.sv` shows the pattern: 0/8 kills at shipped parameters, 7/8 with
-frame-timing properties under `BIT_RATE=25000000 PAYLOAD_BITS=2`.
+`examples/uart_tx/` shows the pattern: `uart_tx.sva.sv` holds at any parameters and kills 0/8 at
+the shipped ones; `uart_tx_frame.sva.sv` pins frame timing under `BIT_RATE=25000000 PAYLOAD_BITS=2`
+and kills 7/8. CI gates both, each at its own parameters.
 
 ## Quality gates
 

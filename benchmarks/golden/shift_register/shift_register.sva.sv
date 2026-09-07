@@ -20,6 +20,14 @@ endproperty
 a_shift_register_hold: assert property (p_shift_register_hold)
     else $error("Assertion Failed: hold violated at cycle %0t", $time);
 
+// Spec 1: reset clears q.
+property p_shift_register_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> q == 8'd0;
+endproperty
+a_shift_register_reset: assert property (p_shift_register_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
 c_shift_register_load: cover property (@(posedge clk) disable iff (!rst_n) load);
 c_shift_register_shift: cover property (@(posedge clk) disable iff (!rst_n) !load && shift);
 `endif

@@ -34,6 +34,14 @@ endproperty
 a_priority_arbiter_any: assert property (p_priority_arbiter_any)
     else $error("Assertion Failed: any violated at cycle %0t", $time);
 
+// Spec 1: reset clears grant.
+property p_priority_arbiter_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> grant == 4'b0000;
+endproperty
+a_priority_arbiter_reset: assert property (p_priority_arbiter_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
 c_priority_arbiter_req3: cover property (@(posedge clk) disable iff (!rst_n) req[3]);
 c_priority_arbiter_req0: cover property (@(posedge clk) disable iff (!rst_n) req[0] && req[3:1] == 3'd0);
 `endif

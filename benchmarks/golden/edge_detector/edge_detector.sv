@@ -24,11 +24,18 @@ module edge_detector (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_edge_detector_rose: assert property (p_edge_detector_rose)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_edge_detector_rose: assert(((pulse == (din && !din_q))));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_edge_detector_rose__cov: cover((1'b1));
     end
   end
   // a_edge_detector_pulse: assert property (p_edge_detector_pulse)
@@ -38,6 +45,11 @@ module edge_detector (
         a_edge_detector_pulse: assert((pulse));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd2 && (rst_n)) begin
+      a_edge_detector_pulse__cov: cover(($past(rst_n) && $rose(din)));
+    end
+  end
   // a_edge_detector_stable: assert property (p_edge_detector_stable)
   always @(posedge clk) begin
     if (f_fsyn_cycles >= 8'd2 && (rst_n)) begin
@@ -45,9 +57,26 @@ module edge_detector (
         a_edge_detector_stable: assert((!pulse));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd2 && (rst_n)) begin
+      a_edge_detector_stable__cov: cover(($past(rst_n) && $stable(din)));
+    end
+  end
+  // a_edge_detector_reset: assert property (p_edge_detector_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_edge_detector_reset: assert(((!din_q && pulse == din)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_edge_detector_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_edge_detector_rise: cover property (@(posedge clk) disable iff (!rst_n) din && !din_q);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_edge_detector_rise: cover((din && !din_q));
     end
   end

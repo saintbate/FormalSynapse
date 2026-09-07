@@ -26,18 +26,30 @@ module priority_arbiter (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_priority_arbiter_onehot0: assert property (p_priority_arbiter_onehot0)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_priority_arbiter_onehot0: assert(($onehot0(grant)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_priority_arbiter_onehot0__cov: cover((1'b1));
+    end
+  end
   // a_priority_arbiter_implies_req: assert property (p_priority_arbiter_implies_req)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past(1'b1, 1))
         a_priority_arbiter_implies_req: assert(((grant & ~$past(req)) == 4'd0));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_priority_arbiter_implies_req__cov: cover((1'b1));
     end
   end
   // a_priority_arbiter_hi3: assert property (p_priority_arbiter_hi3)
@@ -47,11 +59,21 @@ module priority_arbiter (
         a_priority_arbiter_hi3: assert((grant == 4'b1000));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_priority_arbiter_hi3__cov: cover((req[3]));
+    end
+  end
   // a_priority_arbiter_hi2: assert property (p_priority_arbiter_hi2)
   always @(posedge clk) begin
     if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((req[2] && !req[3]), 1))
         a_priority_arbiter_hi2: assert((grant == 4'b0100));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_priority_arbiter_hi2__cov: cover(((req[2] && !req[3])));
     end
   end
   // a_priority_arbiter_any: assert property (p_priority_arbiter_any)
@@ -61,15 +83,32 @@ module priority_arbiter (
         a_priority_arbiter_any: assert(((grant != 4'd0)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_priority_arbiter_any__cov: cover(((req != 4'd0)));
+    end
+  end
+  // a_priority_arbiter_reset: assert property (p_priority_arbiter_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_priority_arbiter_reset: assert((grant == 4'b0000));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_priority_arbiter_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_priority_arbiter_req3: cover property (@(posedge clk) disable iff (!rst_n) req[3]);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_priority_arbiter_req3: cover((req[3]));
     end
   end
   // c_priority_arbiter_req0: cover property (@(posedge clk) disable iff (!rst_n) req[0] && req[3:1] == 3'd0);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_priority_arbiter_req0: cover((req[0] && req[3:1] == 3'd0));
     end
   end

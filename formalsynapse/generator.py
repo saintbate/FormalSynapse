@@ -11,6 +11,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urljoin
@@ -171,16 +172,45 @@ def generate_sva(generator: Generator, messages: list[Message]) -> str:
         raise GenerateError(f"{exc}; raw starts {raw[:160]!r}") from exc
 
 
+def _env_workers() -> int:
+    try:
+        return max(1, int(os.environ.get("FSYN_LLM_PARALLEL", "8")))
+    except ValueError:
+        return 8
+
+
 def generate_sva_n(generator: Generator, messages: list[Message], n: int) -> list[str]:
-    """Sample up to ``n`` extractable SVA blocks (best-of-N input)."""
+    """Sample up to ``n`` extractable SVA blocks (best-of-N input).
+
+    Samples are requested concurrently (``FSYN_LLM_PARALLEL`` workers, default 8) so a vLLM
+    host batches them into one decode pass instead of serving N sequential ~1k-token requests.
+    Order of the returned blocks is the request order, so runs stay reproducible modulo sampling.
+    """
     count = max(1, n)
     blocks: list[str] = []
     last_err: GenerateError | None = None
-    for _ in range(count):
-        try:
-            blocks.append(generate_sva(generator, messages))
-        except GenerateError as exc:
-            last_err = exc
+    workers = min(count, _env_workers())
+    if workers <= 1:
+        results: list[str | GenerateError] = []
+        for _ in range(count):
+            try:
+                results.append(generate_sva(generator, messages))
+            except GenerateError as exc:
+                results.append(exc)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(generate_sva, generator, messages) for _ in range(count)]
+            results = []
+            for fut in futures:
+                try:
+                    results.append(fut.result())
+                except GenerateError as exc:
+                    results.append(exc)
+    for item in results:
+        if isinstance(item, GenerateError):
+            last_err = item
+        else:
+            blocks.append(item)
     if not blocks:
         raise last_err if last_err is not None else GenerateError("no SVA candidates")
     return blocks

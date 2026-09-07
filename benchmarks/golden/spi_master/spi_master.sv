@@ -63,25 +63,42 @@ module spi_master (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_spi_master_start: assert property (p_spi_master_start)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((start && !busy), 1))
         a_spi_master_start: assert((busy && (mosi == $past(data_in[7]))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_start__cov: cover(((start && !busy)));
+    end
+  end
   // a_spi_master_cs: assert property (p_spi_master_cs)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_spi_master_cs: assert(((cs_n == !busy)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_cs__cov: cover((1'b1));
+    end
+  end
   // a_spi_master_sclk_idle: assert property (p_spi_master_sclk_idle)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((!busy))
         a_spi_master_sclk_idle: assert((!sclk));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_sclk_idle__cov: cover((!busy));
     end
   end
   // a_spi_master_done_pulse: assert property (p_spi_master_done_pulse)
@@ -91,22 +108,92 @@ module spi_master (
         a_spi_master_done_pulse: assert((!done));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_done_pulse__cov: cover((done));
+    end
+  end
   // a_spi_master_done_idle: assert property (p_spi_master_done_idle)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((done))
         a_spi_master_done_idle: assert((!busy));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_done_idle__cov: cover((done));
+    end
+  end
+  // a_spi_master_reset: assert property (p_spi_master_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_spi_master_reset: assert(((!busy && cs_n && !done && !sclk && !phase && bit_cnt == 4'd0)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_reset__cov: cover(($rose(rst_n)));
+    end
+  end
+  // a_spi_master_sclk_toggle: assert property (p_spi_master_sclk_toggle)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
+      if ($past(busy, 1))
+        a_spi_master_sclk_toggle: assert(((phase != $past(phase)) || !busy));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_sclk_toggle__cov: cover((busy));
+    end
+  end
+  // a_spi_master_shift: assert property (p_spi_master_shift)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
+      if ($past((busy && phase), 1))
+        a_spi_master_shift: assert((mosi == $past(shifter[6])));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_shift__cov: cover(((busy && phase)));
+    end
+  end
+  // a_spi_master_frame_busy: assert property (p_spi_master_frame_busy)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd16 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4) && $past(rst_n, 5) && $past(rst_n, 6) && $past(rst_n, 7) && $past(rst_n, 8) && $past(rst_n, 9) && $past(rst_n, 10) && $past(rst_n, 11) && $past(rst_n, 12) && $past(rst_n, 13) && $past(rst_n, 14) && $past(rst_n, 15) && $past(rst_n, 16)) begin
+      if ($past((start && !busy), 16))
+        a_spi_master_frame_busy: assert((busy));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_frame_busy__cov: cover(((start && !busy)));
+    end
+  end
+  // a_spi_master_frame_done: assert property (p_spi_master_frame_done)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd17 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4) && $past(rst_n, 5) && $past(rst_n, 6) && $past(rst_n, 7) && $past(rst_n, 8) && $past(rst_n, 9) && $past(rst_n, 10) && $past(rst_n, 11) && $past(rst_n, 12) && $past(rst_n, 13) && $past(rst_n, 14) && $past(rst_n, 15) && $past(rst_n, 16) && $past(rst_n, 17)) begin
+      if ($past((start && !busy), 17))
+        a_spi_master_frame_done: assert(((done && !busy)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_spi_master_frame_done__cov: cover(((start && !busy)));
+    end
+  end
   // c_spi_master_start: cover property (@(posedge clk) disable iff (!rst_n) start && !busy);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_spi_master_start: cover((start && !busy));
     end
   end
   // c_spi_master_done: cover property (@(posedge clk) disable iff (!rst_n) done);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_spi_master_done: cover((done));
     end
   end

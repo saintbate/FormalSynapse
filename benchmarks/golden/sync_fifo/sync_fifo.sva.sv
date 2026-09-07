@@ -41,6 +41,14 @@ endproperty
 a_sync_fifo_order: assert property (p_sync_fifo_order)
     else $error("Assertion Failed: order violated at cycle %0t", $time);
 
+// Spec 1: reset: pointers and count are 0, empty, not full.
+property p_sync_fifo_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> (wr_ptr == '0 && rd_ptr == '0 && count == 3'd0 && empty && !full);
+endproperty
+a_sync_fifo_reset: assert property (p_sync_fifo_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
 c_sync_fifo_wr: cover property (@(posedge clk) disable iff (!rst_n) wr_en && !full);
 c_sync_fifo_rd: cover property (@(posedge clk) disable iff (!rst_n) rd_en && !empty);
 c_sync_fifo_full: cover property (@(posedge clk) disable iff (!rst_n) full);

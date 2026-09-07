@@ -288,8 +288,8 @@ Re-gate with the fixed grader (BMC 20, 8 mutants, `--min-kill 0.25`):
 | set | result |
 |---|---|
 | golden hand-written SVA, 10 blocks | 10/10 prove+cover PASS; kill 100% on 7, `rr_arbiter` 8/8, `onehot_fsm` 1/2, `spi_master` 2/6 |
-| `examples/uart_tx` (ben-marshall/uart), shipped parameters | prove+cover PASS, kill 0/8 (frame-timing mutants are ~5k cycles out at 9600 baud) |
-| `examples/uart_tx`, `--param BIT_RATE=25000000 PAYLOAD_BITS=2`, depth 30 | prove+cover PASS, kill 7/8 (88%); the survivor flips the data-latch condition, which port-only SVA cannot see. This is the CI configuration (`min-kill 0.5`). |
+| `examples/uart_tx/uart_tx.sva.sv` (ben-marshall/uart), shipped parameters | prove+cover PASS, kill 0/8 (frame-timing mutants are ~5k cycles out at 9600 baud); holds at any parameters |
+| `examples/uart_tx/uart_tx_frame.sva.sv`, `--param BIT_RATE=25000000 PAYLOAD_BITS=2`, depth 30 | prove+cover PASS, kill 7/8 (88%); the survivor flips the data-latch condition, which port-only SVA cannot see. CI gates it with `min-kill 0.5`. |
 | saved CodeV-14B golden candidates, 8 of 10 | 2/8 pass the bar (`counter` 8/8, `edge_detector` 1/1); `onehot_fsm` proves but kills 0/2; 5 ERROR on prose/undefined-macro output |
 | saved AssertLLM2 candidates, 4 | `versatile_counter` PASS 3/8 (38%) unchanged; `uart` and `present_cipher` now ERROR (invented `rst_n`, item 5); `programmable_interval_timer` FAIL (`a_counter_reset` @ step 2, genuine) |
 
@@ -324,6 +324,68 @@ Writing the frame properties surfaced two more things:
    The frame-completion assert found it at `BIT_RATE=25000000`; hence
    `PAYLOAD_BITS=2` in the CI configuration. The frame is also 12..14 clocks
    rather than a fixed length because `cycle_counter` is not cleared in IDLE.
+
+### Golden evidence (mutator operators + reset properties)
+
+The golden kill numbers above were thin (`edge_detector` 1 mutant, `onehot_fsm`
+2, `spi_master` 2/6) because the mutator only knew boolean/relational/arithmetic
+operator swaps and `if` polarity. It now also has:
+
+- `const_flip`: flip the low bit of a sized literal (`4'd0 -> 4'd1`,
+  `1'b1 -> 1'b0`, `8'hFF -> 8'hFE`) or a bare `<= 0;` / `= 3;` right-hand side.
+  Lines with `parameter`/`localparam`/`initial`/loop headers and literals inside
+  `[...]` are left alone (`initial` because the grader holds reset at step 0, so
+  a changed init value is overwritten before any check and only pads the
+  survivor count).
+- `case_swap`: swap the labels of two adjacent `case` arms (`S_ACK <-> S_DONE`).
+- off-by-one relationals: `<` <-> `<=`, `>` <-> `>=` alongside the existing
+  `<` <-> `>` pairs.
+
+Golden site counts went from 2..27 per block to 2..50 (`priority_arbiter` 8,
+`spi_master` 27, `rr_arbiter` 50), and 8-mutant gates now draw from every class.
+
+The first re-gate with the new operators exposed a real gap in the hand-written
+SVA, not in the grader: every golden spec's requirement 1 is a reset state, and
+none of the ten `.sva.sv` files checked it, so every "wrong reset value" mutant
+(`din_q <= 1'b1`, `grant <= 4'b0001`, `q <= 8'd1`, ...) survived. Each block now
+has a `$rose(rst_n) |-> <spec reset state>` property. This works under the
+harness because the reset gate shifts over the sequence *window* (`##N`), not
+over `$past` history, so `$rose(rst_n)` at cycle 1 reads the assumed step-0
+reset and is reachable (its auto-cover is hit at step 2). `onehot_fsm` also
+gained the `done` decode (the `req` decode was checked, `done` was not);
+`skid_buffer` gained a drain property; `spi_master` gained sclk toggle, MSB-first
+shift and a 16-cycle frame (`|=> ##15 busy`, `|=> ##16 done && !busy`).
+
+| block | before | after |
+|---|---|---|
+| counter | 8/8 | 8/8 |
+| edge_detector | 1/2 | 2/2 |
+| gray_counter | 3/4 | 4/4 |
+| onehot_fsm | 4/5 | 5/5 |
+| priority_arbiter | 6/7 | 7/7 |
+| rr_arbiter | 8/8 | 8/8 |
+| shift_register | 2/3 | 3/3 |
+| skid_buffer | 6/8 | 8/8 |
+| spi_master | 1/8 | 6/8 |
+| sync_fifo | 8/8 | 8/8 |
+
+("before" is the new mutator against the old SVA.) The two `spi_master`
+survivors are equivalent mutants: `sclk = busy || phase` because `phase` is only
+ever set while `busy` and cleared in the same cycle `busy` falls, and the
+shifter's reset value `8'd1` because only `shifter[7]` is visible and `start`
+reloads the shifter before any shift. They stay in the denominator; the gate
+does not try to detect equivalence.
+
+The lowered block embedded in each golden `.sv` (so `sby -f <block>.sby` runs
+standalone) was regenerated from the current lowerer at the same time; it had
+been produced by the pre-audit lowerer (summed guards, no auto-covers, no reset
+assumption). `sync_fifo.sby`'s `prove` task fails induction as it did before
+this change (bmc and cover pass); that is a pre-existing k-induction gap, not
+a property failure.
+
+Sampling for best-of-N is now concurrent (`FSYN_LLM_PARALLEL`, default 8) so
+vLLM batches the N candidates; sequential 1k-token requests made a golden
+regeneration a multi-hour job.
 
 ### Weeks 7–9
 

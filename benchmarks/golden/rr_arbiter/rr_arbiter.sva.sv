@@ -48,5 +48,13 @@ endproperty
 a_rr_arbiter_fair3: assert property (p_rr_arbiter_fair3)
     else $error("Assertion Failed: fair3 violated at cycle %0t", $time);
 
+// Spec 1: reset clears grant and puts the pointer at 0.
+property p_rr_arbiter_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> (grant == 4'b0000 && ptr == 2'd0);
+endproperty
+a_rr_arbiter_reset: assert property (p_rr_arbiter_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
 c_rr_arbiter_req: cover property (@(posedge clk) disable iff (!rst_n) req != 4'd0);
 `endif

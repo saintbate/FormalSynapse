@@ -59,63 +59,107 @@ module sync_fifo (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_sync_fifo_count_wr: assert property (p_sync_fifo_count_wr)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((wr_en && !full && !(rd_en && !empty)), 1))
         a_sync_fifo_count_wr: assert((count == $past(count) + 3'd1));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_count_wr__cov: cover(((wr_en && !full && !(rd_en && !empty))));
+    end
+  end
   // a_sync_fifo_count_rd: assert property (p_sync_fifo_count_rd)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((rd_en && !empty && !(wr_en && !full)), 1))
         a_sync_fifo_count_rd: assert((count == $past(count) - 3'd1));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_count_rd__cov: cover(((rd_en && !empty && !(wr_en && !full))));
+    end
+  end
   // a_sync_fifo_count_both: assert property (p_sync_fifo_count_both)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((wr_en && !full && rd_en && !empty), 1))
         a_sync_fifo_count_both: assert((count == $past(count)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_count_both__cov: cover(((wr_en && !full && rd_en && !empty)));
+    end
+  end
   // a_sync_fifo_full: assert property (p_sync_fifo_full)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_sync_fifo_full: assert(((full == (count == 3'd4))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_full__cov: cover((1'b1));
+    end
+  end
   // a_sync_fifo_empty: assert property (p_sync_fifo_empty)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_sync_fifo_empty: assert(((empty == (count == 3'd0))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_empty__cov: cover((1'b1));
+    end
+  end
   // a_sync_fifo_order: assert property (p_sync_fifo_order)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((wr_en && empty), 1))
         a_sync_fifo_order: assert((!empty && (rd_data == $past(wr_data))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_order__cov: cover(((wr_en && empty)));
+    end
+  end
+  // a_sync_fifo_reset: assert property (p_sync_fifo_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_sync_fifo_reset: assert(((wr_ptr == '0 && rd_ptr == '0 && count == 3'd0 && empty && !full)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_sync_fifo_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_sync_fifo_wr: cover property (@(posedge clk) disable iff (!rst_n) wr_en && !full);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_sync_fifo_wr: cover((wr_en && !full));
     end
   end
   // c_sync_fifo_rd: cover property (@(posedge clk) disable iff (!rst_n) rd_en && !empty);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_sync_fifo_rd: cover((rd_en && !empty));
     end
   end
   // c_sync_fifo_full: cover property (@(posedge clk) disable iff (!rst_n) full);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_sync_fifo_full: cover((full));
     end
   end

@@ -23,30 +23,59 @@ module gray_counter (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_gray_counter_enc: assert property (p_gray_counter_enc)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_gray_counter_enc: assert(((gray == (bin ^ (bin >> 1)))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_gray_counter_enc__cov: cover((1'b1));
+    end
+  end
   // a_gray_counter_inc: assert property (p_gray_counter_inc)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past(en, 1))
         a_gray_counter_inc: assert((bin == $past(bin) + 4'd1));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_gray_counter_inc__cov: cover((en));
+    end
+  end
   // a_gray_counter_onebit: assert property (p_gray_counter_onebit)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past(en, 1))
         a_gray_counter_onebit: assert(($countones(gray ^ $past(gray)) == 3'd1));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_gray_counter_onebit__cov: cover((en));
+    end
+  end
+  // a_gray_counter_reset: assert property (p_gray_counter_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_gray_counter_reset: assert(((bin == 4'd0 && gray == 4'd0)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_gray_counter_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_gray_counter_en: cover property (@(posedge clk) disable iff (!rst_n) en);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_gray_counter_en: cover((en));
     end
   end

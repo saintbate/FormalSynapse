@@ -40,11 +40,18 @@ module onehot_fsm (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_onehot_fsm_onehot: assert property (p_onehot_fsm_onehot)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_onehot_fsm_onehot: assert(($onehot(state)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_onehot__cov: cover((1'b1));
     end
   end
   // a_onehot_fsm_idle: assert property (p_onehot_fsm_idle)
@@ -54,11 +61,21 @@ module onehot_fsm (
         a_onehot_fsm_idle: assert(((state == 4'b0001) || (state == 4'b0010)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_idle__cov: cover(((state == 4'b0001)));
+    end
+  end
   // a_onehot_fsm_reqst: assert property (p_onehot_fsm_reqst)
   always @(posedge clk) begin
     if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((state == 4'b0010), 1))
         a_onehot_fsm_reqst: assert(((state == 4'b0010) || (state == 4'b0100)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_reqst__cov: cover(((state == 4'b0010)));
     end
   end
   // a_onehot_fsm_ack: assert property (p_onehot_fsm_ack)
@@ -68,6 +85,11 @@ module onehot_fsm (
         a_onehot_fsm_ack: assert(((state == 4'b1000)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_ack__cov: cover(((state == 4'b0100)));
+    end
+  end
   // a_onehot_fsm_done_st: assert property (p_onehot_fsm_done_st)
   always @(posedge clk) begin
     if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
@@ -75,22 +97,56 @@ module onehot_fsm (
         a_onehot_fsm_done_st: assert(((state == 4'b0001)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_done_st__cov: cover(((state == 4'b1000)));
+    end
+  end
   // a_onehot_fsm_req: assert property (p_onehot_fsm_req)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_onehot_fsm_req: assert(((req == (state == 4'b0010))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_req__cov: cover((1'b1));
+    end
+  end
+  // a_onehot_fsm_done: assert property (p_onehot_fsm_done)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if ((1'b1))
+        a_onehot_fsm_done: assert(((done == (state == 4'b1000))));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_done__cov: cover((1'b1));
+    end
+  end
+  // a_onehot_fsm_reset: assert property (p_onehot_fsm_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_onehot_fsm_reset: assert(((state == 4'b0001)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_onehot_fsm_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_onehot_fsm_start: cover property (@(posedge clk) disable iff (!rst_n) start && (state == 4'b0001));
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_onehot_fsm_start: cover((start && (state == 4'b0001)));
     end
   end
   // c_onehot_fsm_done: cover property (@(posedge clk) disable iff (!rst_n) done);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_onehot_fsm_done: cover((done));
     end
   end

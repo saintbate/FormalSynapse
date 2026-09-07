@@ -41,6 +41,22 @@ endproperty
 a_onehot_fsm_req: assert property (p_onehot_fsm_req)
     else $error("Assertion Failed: req violated at cycle %0t", $time);
 
+// done is the S_DONE decode (the req property above covers S_REQ).
+property p_onehot_fsm_done;
+    @(posedge clk) disable iff (!rst_n)
+    1'b1 |-> (done == (state == 4'b1000));
+endproperty
+a_onehot_fsm_done: assert property (p_onehot_fsm_done)
+    else $error("Assertion Failed: done decode violated at cycle %0t", $time);
+
+// Spec 1: reset enters IDLE.
+property p_onehot_fsm_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> (state == 4'b0001);
+endproperty
+a_onehot_fsm_reset: assert property (p_onehot_fsm_reset)
+    else $error("Assertion Failed: reset state violated at cycle %0t", $time);
+
 c_onehot_fsm_start: cover property (@(posedge clk) disable iff (!rst_n) start && (state == 4'b0001));
 c_onehot_fsm_done: cover property (@(posedge clk) disable iff (!rst_n) done);
 `endif

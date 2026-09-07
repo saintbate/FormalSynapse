@@ -23,25 +23,42 @@ module counter (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_counter_inc: assert property (p_counter_inc)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((up && !down && count != 4'hF), 1))
         a_counter_inc: assert((count == $past(count) + 4'd1));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_counter_inc__cov: cover(((up && !down && count != 4'hF)));
+    end
+  end
   // a_counter_dec: assert property (p_counter_dec)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((down && !up && count != 4'd0), 1))
         a_counter_dec: assert((count == $past(count) - 4'd1));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_counter_dec__cov: cover(((down && !up && count != 4'd0)));
+    end
+  end
   // a_counter_hold: assert property (p_counter_hold)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past(((up && down) || (!up && !down)), 1))
         a_counter_hold: assert((count == $past(count)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_counter_hold__cov: cover((((up && down) || (!up && !down))));
     end
   end
   // a_counter_sat_max: assert property (p_counter_sat_max)
@@ -51,6 +68,11 @@ module counter (
         a_counter_sat_max: assert((count == 4'hF));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_counter_sat_max__cov: cover(((up && !down && count == 4'hF)));
+    end
+  end
   // a_counter_sat_min: assert property (p_counter_sat_min)
   always @(posedge clk) begin
     if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
@@ -58,21 +80,38 @@ module counter (
         a_counter_sat_min: assert((count == 4'd0));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_counter_sat_min__cov: cover(((down && !up && count == 4'd0)));
+    end
+  end
+  // a_counter_reset: assert property (p_counter_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_counter_reset: assert((count == 4'd0));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_counter_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_counter_inc: cover property (@(posedge clk) disable iff (!rst_n) up && !down && count != 4'hF);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_counter_inc: cover((up && !down && count != 4'hF));
     end
   end
   // c_counter_dec: cover property (@(posedge clk) disable iff (!rst_n) down && !up && count != 4'd0);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_counter_dec: cover((down && !up && count != 4'd0));
     end
   end
   // c_counter_sat: cover property (@(posedge clk) disable iff (!rst_n) up && !down && count == 4'hF);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_counter_sat: cover((up && !down && count == 4'hF));
     end
   end

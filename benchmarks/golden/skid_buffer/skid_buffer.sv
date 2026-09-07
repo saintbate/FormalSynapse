@@ -34,43 +34,89 @@ module skid_buffer (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_skid_buffer_ready: assert property (p_skid_buffer_ready)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_skid_buffer_ready: assert(((s_ready == !buf_valid)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_skid_buffer_ready__cov: cover((1'b1));
+    end
+  end
   // a_skid_buffer_valid: assert property (p_skid_buffer_valid)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_skid_buffer_valid: assert(((m_valid == (buf_valid || s_valid))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_skid_buffer_valid__cov: cover((1'b1));
+    end
+  end
   // a_skid_buffer_stable: assert property (p_skid_buffer_stable)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((m_valid && !m_ready), 1))
         a_skid_buffer_stable: assert(($stable(m_data) && m_valid));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_skid_buffer_stable__cov: cover(((m_valid && !m_ready)));
+    end
+  end
   // a_skid_buffer_capture: assert property (p_skid_buffer_capture)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past((s_valid && s_ready && !m_ready), 1))
         a_skid_buffer_capture: assert((buf_valid && (m_data == $past(s_data))));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_skid_buffer_capture__cov: cover(((s_valid && s_ready && !m_ready)));
+    end
+  end
+  // a_skid_buffer_reset: assert property (p_skid_buffer_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_skid_buffer_reset: assert(((!buf_valid && s_ready && m_valid == s_valid)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_skid_buffer_reset__cov: cover(($rose(rst_n)));
+    end
+  end
+  // a_skid_buffer_drain: assert property (p_skid_buffer_drain)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
+      if ($past((buf_valid && m_ready), 1))
+        a_skid_buffer_drain: assert((!buf_valid));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_skid_buffer_drain__cov: cover(((buf_valid && m_ready)));
+    end
+  end
   // c_skid_buffer_accept: cover property (@(posedge clk) disable iff (!rst_n) s_valid && s_ready);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_skid_buffer_accept: cover((s_valid && s_ready));
     end
   end
   // c_skid_buffer_stall: cover property (@(posedge clk) disable iff (!rst_n) m_valid && !m_ready);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_skid_buffer_stall: cover((m_valid && !m_ready));
     end
   end

@@ -20,5 +20,13 @@ endproperty
 a_edge_detector_stable: assert property (p_edge_detector_stable)
     else $error("Assertion Failed: stable violated at cycle %0t", $time);
 
+// Spec 1: reset clears the delay flop, so in the first cycle out of reset pulse == din.
+property p_edge_detector_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> (!din_q && pulse == din);
+endproperty
+a_edge_detector_reset: assert property (p_edge_detector_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
 c_edge_detector_rise: cover property (@(posedge clk) disable iff (!rst_n) din && !din_q);
 `endif

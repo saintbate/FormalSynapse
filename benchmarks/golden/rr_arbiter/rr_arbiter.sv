@@ -68,18 +68,30 @@ module rr_arbiter (
   always @(posedge clk) begin
     if (f_fsyn_cycles != 8'd255) f_fsyn_cycles <= f_fsyn_cycles + 1'b1;
   end
+  // reset assumption: rst_n held active for 1 cycle(s) from step 0
+  initial assume(!rst_n);
   // a_rr_arbiter_onehot0: assert property (p_rr_arbiter_onehot0)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       if ((1'b1))
         a_rr_arbiter_onehot0: assert(($onehot0(grant)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_onehot0__cov: cover((1'b1));
+    end
+  end
   // a_rr_arbiter_implies_req: assert property (p_rr_arbiter_implies_req)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd2 && (rst_n) && $past(rst_n, 1)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n) && $past(rst_n, 1)) begin
       if ($past(1'b1, 1))
         a_rr_arbiter_implies_req: assert(((grant & ~$past(req)) == 4'd0));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_implies_req__cov: cover((1'b1));
     end
   end
   // a_rr_arbiter_any: assert property (p_rr_arbiter_any)
@@ -89,37 +101,74 @@ module rr_arbiter (
         a_rr_arbiter_any: assert(((grant != 4'd0)));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_any__cov: cover(((req != 4'd0)));
+    end
+  end
   // a_rr_arbiter_fair0: assert property (p_rr_arbiter_fair0)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd7 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
+    if (f_fsyn_cycles >= 8'd4 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
       if ($past(req[0], 4))
         a_rr_arbiter_fair0: assert(((grant[0] || !req[0])) || $past((grant[0] || !req[0]), 1) || $past((grant[0] || !req[0]), 2) || $past((grant[0] || !req[0]), 3));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_fair0__cov: cover((req[0]));
+    end
+  end
   // a_rr_arbiter_fair1: assert property (p_rr_arbiter_fair1)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd7 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
+    if (f_fsyn_cycles >= 8'd4 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
       if ($past(req[1], 4))
         a_rr_arbiter_fair1: assert(((grant[1] || !req[1])) || $past((grant[1] || !req[1]), 1) || $past((grant[1] || !req[1]), 2) || $past((grant[1] || !req[1]), 3));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_fair1__cov: cover((req[1]));
+    end
+  end
   // a_rr_arbiter_fair2: assert property (p_rr_arbiter_fair2)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd7 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
+    if (f_fsyn_cycles >= 8'd4 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
       if ($past(req[2], 4))
         a_rr_arbiter_fair2: assert(((grant[2] || !req[2])) || $past((grant[2] || !req[2]), 1) || $past((grant[2] || !req[2]), 2) || $past((grant[2] || !req[2]), 3));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_fair2__cov: cover((req[2]));
+    end
+  end
   // a_rr_arbiter_fair3: assert property (p_rr_arbiter_fair3)
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd7 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
+    if (f_fsyn_cycles >= 8'd4 && (rst_n) && $past(rst_n, 1) && $past(rst_n, 2) && $past(rst_n, 3) && $past(rst_n, 4)) begin
       if ($past(req[3], 4))
         a_rr_arbiter_fair3: assert(((grant[3] || !req[3])) || $past((grant[3] || !req[3]), 1) || $past((grant[3] || !req[3]), 2) || $past((grant[3] || !req[3]), 3));
     end
   end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_fair3__cov: cover((req[3]));
+    end
+  end
+  // a_rr_arbiter_reset: assert property (p_rr_arbiter_reset)
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      if (($rose(rst_n)))
+        a_rr_arbiter_reset: assert(((grant == 4'b0000 && ptr == 2'd0)));
+    end
+  end
+  always @(posedge clk) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
+      a_rr_arbiter_reset__cov: cover(($rose(rst_n)));
+    end
+  end
   // c_rr_arbiter_req: cover property (@(posedge clk) disable iff (!rst_n) req != 4'd0);
   always @(posedge clk) begin
-    if (f_fsyn_cycles >= 8'd0 && (rst_n)) begin
+    if (f_fsyn_cycles >= 8'd1 && (rst_n)) begin
       c_rr_arbiter_req: cover((req != 4'd0));
     end
   end

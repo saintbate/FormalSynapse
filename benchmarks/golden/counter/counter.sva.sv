@@ -34,6 +34,14 @@ endproperty
 a_counter_sat_min: assert property (p_counter_sat_min)
     else $error("Assertion Failed: sat_min violated at cycle %0t", $time);
 
+// Spec 1: on reset, count is 0.
+property p_counter_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> count == 4'd0;
+endproperty
+a_counter_reset: assert property (p_counter_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
 c_counter_inc: cover property (@(posedge clk) disable iff (!rst_n) up && !down && count != 4'hF);
 c_counter_dec: cover property (@(posedge clk) disable iff (!rst_n) down && !up && count != 4'd0);
 c_counter_sat: cover property (@(posedge clk) disable iff (!rst_n) up && !down && count == 4'hF);

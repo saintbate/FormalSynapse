@@ -184,6 +184,75 @@ def test_site_selection_is_deterministic_and_spread() -> None:
     assert [m.name for m in a] == [f"{m.operator}_{i}" for i, m in enumerate(a)]
 
 
+def test_const_flip_sized_and_bare_literals() -> None:
+    mutants = generate_mutants(COUNTER, max_mutants=32)
+    flips = [m for m in mutants if m.operator == "const_flip"]
+    # reset value and increment are both flipped; each is a distinct single-site mutant
+    assert any("count <= 4'd1;" in m.rtl and "count + 4'd1" in m.rtl for m in flips)
+    assert any("count + 4'd0" in m.rtl and "count <= 4'd0;" in m.rtl for m in flips)
+    rtl = """\
+module m (input clk, input rst_n, input a, output logic [7:0] y, output logic z);
+    always_ff @(posedge clk) begin
+        y <= 8'hFF;
+        z <= 0;
+    end
+    assign w = 1'bx;
+endmodule
+"""
+    flips = [m for m in generate_mutants(rtl, max_mutants=32) if m.operator == "const_flip"]
+    assert any("y <= 8'hFE;" in m.rtl for m in flips)
+    assert any("z <= 1;" in m.rtl for m in flips)
+    assert all("1'bx" in m.rtl for m in flips)  # x digits are left alone
+
+
+def test_const_flip_skips_parameters_initials_and_selects() -> None:
+    rtl = """\
+module m #(parameter W = 4'd4) (input clk, input rst_n, input [3:0] v, output logic [3:0] q);
+    localparam logic [3:0] ZERO = 4'd0;
+    initial q = 4'd0;
+    always_ff @(posedge clk) q <= v[4'd2] ? ZERO : q;
+endmodule
+"""
+    assert not any(m.operator == "const_flip" for m in generate_mutants(rtl, max_mutants=32))
+
+
+def test_case_swap_adjacent_arms_only() -> None:
+    rtl = """\
+module fsm (input clk, input rst_n, input go, output logic [1:0] st);
+    localparam logic [1:0] A = 2'd0;
+    localparam logic [1:0] B = 2'd1;
+    localparam logic [1:0] C = 2'd2;
+    always_ff @(posedge clk) begin
+        case (st)
+            A: st <= go ? B : A;
+            B: st <= C;
+            C: st <= A;
+            default: st <= A;
+        endcase
+    end
+endmodule
+"""
+    swaps = [m for m in generate_mutants(rtl, max_mutants=32) if m.operator == "case_swap"]
+    assert len(swaps) == 2
+    assert any("B: st <= go ? B : A;\n            A: st <= C;" in m.rtl for m in swaps)
+    assert any("C: st <= C;\n            B: st <= A;" in m.rtl for m in swaps)
+    assert all("default:" in m.rtl for m in swaps)
+
+
+def test_relational_off_by_one() -> None:
+    rtl = """\
+module m (input clk, input rst_n, input [3:0] a, input [3:0] b, output y, output z);
+    assign y = a < b;
+    assign z = a >= b;
+endmodule
+"""
+    mutants = generate_mutants(rtl, max_mutants=32)
+    ops = {m.operator for m in mutants}
+    assert {"lt_le", "lt_gt", "ge_gt", "ge_le"} <= ops
+    assert any("a <= b" in m.rtl for m in mutants)
+    assert any("a > b" in m.rtl for m in mutants)
+
+
 def test_rtl_hunk_marks_golden_minus_and_mutant_plus() -> None:
     golden = "assign q_next = clear ? 4'd0 : qi - 4'd1;\n"
     mutant = "assign q_next = clear ? 4'd1 : qi - 4'd1;\n"

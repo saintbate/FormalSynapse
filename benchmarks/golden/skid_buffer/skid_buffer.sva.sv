@@ -27,6 +27,22 @@ endproperty
 a_skid_buffer_capture: assert property (p_skid_buffer_capture)
     else $error("Assertion Failed: capture violated at cycle %0t", $time);
 
+// Spec 1: reset leaves the skid register empty.
+property p_skid_buffer_reset;
+    @(posedge clk) disable iff (!rst_n)
+    $rose(rst_n) |-> (!buf_valid && s_ready && m_valid == s_valid);
+endproperty
+a_skid_buffer_reset: assert property (p_skid_buffer_reset)
+    else $error("Assertion Failed: reset value violated at cycle %0t", $time);
+
+// Spec 6: a buffered beat is taken (the register drains) when the master is ready.
+property p_skid_buffer_drain;
+    @(posedge clk) disable iff (!rst_n)
+    (buf_valid && m_ready) |=> !buf_valid;
+endproperty
+a_skid_buffer_drain: assert property (p_skid_buffer_drain)
+    else $error("Assertion Failed: skid register did not drain at cycle %0t", $time);
+
 c_skid_buffer_accept: cover property (@(posedge clk) disable iff (!rst_n) s_valid && s_ready);
 c_skid_buffer_stall: cover property (@(posedge clk) disable iff (!rst_n) m_valid && !m_ready);
 `endif
