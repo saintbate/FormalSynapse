@@ -7,6 +7,7 @@ below ``min_kill`` is incomplete: mutation kill keeps the loop open.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -23,12 +24,14 @@ from formalsynapse.prompts import (
     kill_miss_user,
     kill_unscored_user,
     refinement_user,
+    skipped_section,
+    skipped_user,
     slot_repair_user,
     system_prompt,
     vacuity_user,
     zero_shot_user,
 )
-from formalsynapse.sva_edit import has_assert, merge_sva, strip_labels, unwrap_formal
+from formalsynapse.sva_edit import drop_duplicates, has_assert, merge_sva, strip_labels, unwrap_formal
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.verify_harness import VerifyResult, verify
 
@@ -58,6 +61,16 @@ class Attempt:
     def vacuous(self) -> tuple[str, ...]:
         """Assert labels whose antecedent the cover run could not reach."""
         return self.cover.vacuous_assertions if self.cover is not None else ()
+
+    @property
+    def skipped(self) -> tuple[str, ...]:
+        """Lowerer diagnostics for statements that were in the block but were NOT proven."""
+        return tuple(self.result.skipped)
+
+    @property
+    def complete(self) -> bool:
+        """Proven with nothing skipped: every statement the model wrote was actually checked."""
+        return self.proven and not self.skipped
 
     @property
     def proven(self) -> bool:
@@ -226,26 +239,43 @@ def _count(items: Sequence[Trajectory], pred: Callable[[Trajectory], bool]) -> i
     return sum(1 for t in items if pred(t))
 
 
-def _winner_key(att: Attempt) -> tuple[int, int, int, int]:
-    """Lower is better. A later FAIL must not beat an earlier prove."""
+def _winner_key(att: Attempt) -> tuple[int, int, int, int, int]:
+    """Lower is better. A later FAIL must not beat an earlier prove.
+
+    Among proofs, more kills win; at equal kills a block with fewer skipped (unproven)
+    statements wins, because a winner's text is what gets logged for distillation.
+    """
     if att.proven:
-        return (0, -att.killed, -att.valid_mutants, att.turn)
+        return (0, -att.killed, len(att.skipped), -att.valid_mutants, att.turn)
     if att.result.ok:  # sby PASS but vacuous / nothing lowered
-        return (1, len(att.vacuous), 0, att.turn)
+        return (1, len(att.vacuous), len(att.skipped), 0, att.turn)
     if att.result.status == "FAIL":
-        return (2, len(att.result.failed_assertions), att.turn, att.turn)
-    return (3, 99, 0, att.turn)
+        return (2, len(att.result.failed_assertions), att.turn, 0, att.turn)
+    return (3, 99, 0, 0, att.turn)
 
 
 def _rank(result: VerifyResult) -> tuple[int, int, int]:
-    """Lower is better. PASS wins; among FAILs, fewer failed labels win."""
+    """Lower is better. PASS wins (fewer skipped statements first); among FAILs, fewer failed labels win."""
     if result.ok:
-        return (0, 0, 0)
+        return (0, len(result.skipped), 0)
     if result.status == "ERROR":
         return (3, 99, 0)
     n_fail = len(result.failed_assertions)
     step = result.failing_step if result.failing_step is not None else 99
     return (1, n_fail, step)
+
+
+_SKIPPED_LABEL = re.compile(r"^(?:assert|assume|cover)\s+'([A-Za-z_]\w*)'", re.I)
+
+
+def _skipped_labels(att: Attempt) -> tuple[str, ...]:
+    """Statement labels the lowerer skipped (property-level skips surface through their statements)."""
+    out: list[str] = []
+    for item in att.skipped:
+        m = _SKIPPED_LABEL.match(item)
+        if m is not None and m.group(1) not in out:
+            out.append(m.group(1))
+    return tuple(out)
 
 
 @contextmanager
@@ -372,7 +402,13 @@ def run_block(
             continue
         best: Attempt | None = None
         for i, raw in enumerate(raw_blocks, start=1):
-            sva = merge_sva(kept, raw) if unwrap_formal(kept) else raw
+            if unwrap_formal(kept):
+                # The model was told not to copy kept properties back; when it does, the proven
+                # kept copy wins and the re-emitted one is dropped instead of failing the turn.
+                raw, _dups = drop_duplicates(kept, raw)
+                sva = merge_sva(kept, raw)
+            else:
+                sva = raw
             result = verify(
                 dut_path,
                 sva,
@@ -387,7 +423,7 @@ def run_block(
             att = Attempt(turn, sva, result)
             if best is None or _rank(result) < _rank(best.result):
                 best = att
-            if result.ok:
+            if result.ok and not result.skipped:
                 break
         assert best is not None
         if best.result.ok and _has_covers(best.result):
@@ -426,30 +462,41 @@ def run_block(
         if turn == max_turns:
             break
         if best.result.ok:
-            if best.proven and best.meets_kill(min_kill):
+            if best.complete and best.meets_kill(min_kill):
                 break
             messages.append(Message("assistant", best.sva))
+            # Statements the lowerer skipped were never checked: strip them from the kept block so
+            # the model rewrites (or drops) them, and say why in every repair message.
+            skipped_labels = _skipped_labels(best)
+            proven_sva = strip_labels(best.sva, skipped_labels) if skipped_labels else best.sva
+            note_skips = bool(best.skipped)
             if best.vacuous:
-                kept = strip_labels(best.sva, best.vacuous)
+                kept = strip_labels(proven_sva, best.vacuous)
                 repair = vacuity_user(kept_sva=kept, vacuous=best.vacuous, depth=depth)
             elif not best.proven:
-                kept = best.sva
-                repair = cover_only_user(kept_sva=best.sva)
+                kept = proven_sva
+                repair = cover_only_user(kept_sva=proven_sva)
             elif best.valid_mutants == 0:
-                kept = best.sva
+                kept = proven_sva
                 repair = kill_unscored_user(
-                    kept_sva=best.sva,
+                    kept_sva=proven_sva,
                     attempted=best.attempted_mutants,
                 )
-            else:
-                kept = best.sva
+            elif not best.meets_kill(min_kill):
+                kept = proven_sva
                 repair = kill_miss_user(
-                    kept_sva=best.sva,
+                    kept_sva=proven_sva,
                     killed=best.killed,
                     valid=best.valid_mutants,
                     survivors=best.unkilled,
                     min_kill=min_kill,
                 )
+            else:  # kill bar met; only the skipped statements remain
+                kept = proven_sva
+                repair = skipped_user(kept_sva=proven_sva, skipped=best.skipped)
+                note_skips = False  # the message is about the skips already
+            if note_skips:
+                repair = skipped_section(best.skipped) + "\n" + repair
             messages.append(Message("user", repair))
             continue
         failed = best.result.failed_assertions

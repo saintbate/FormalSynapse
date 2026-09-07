@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 Kind = Literal["assert", "assume", "cover"]
@@ -592,6 +592,20 @@ def parse_property_body(
     every property without its own ``disable iff``. A property with neither clocking nor
     disable gets ``fallback_disable`` (the DUT reset, or ``!rst_n``).
     """
+    clock, disable, rest = _parse_prefix(
+        body, default_clock=default_clock, default_disable=default_disable, fallback_disable=fallback_disable
+    )
+    return _parse_implication(rest, clock, disable)
+
+
+def _parse_prefix(
+    body: str,
+    *,
+    default_clock: str,
+    default_disable: str | None,
+    fallback_disable: str | None,
+) -> tuple[str, str | None, str]:
+    """Split ``@(posedge clk) [disable iff (D)] <prop>`` into (clock, disable, prop text)."""
     body = body.strip().rstrip(";").strip()
     m = _CLOCKING.match(body)
     implicit_clock = m is None
@@ -617,6 +631,69 @@ def parse_property_body(
     rest = _rewrite_boolean_keywords(rest.strip())
     if not rest:
         raise LowerError("property has no body")
+    return clock, disable, rest
+
+
+def parse_property_bodies(
+    body: str,
+    *,
+    default_clock: str = "clk",
+    default_disable: str | None = None,
+    fallback_disable: str | None = "!rst_n",
+) -> tuple[Property, ...]:
+    """Like :func:`parse_property_body`, but a top-level conjunction of implications
+    ``(a |-> b) && (c |=> d) && ...`` (or with SVA ``and``) yields one Property per conjunct.
+
+    A conjunction of properties holds iff every conjunct holds, so lowering each conjunct as
+    its own check (labelled ``<label>__kN``) is exact. Models write this constantly for
+    per-bit or per-priority requirements; rejecting it lost whole properties from a block.
+    Mixing implications with plain booleans in one conjunction is still an error.
+    """
+    clock, disable, rest = _parse_prefix(
+        body, default_clock=default_clock, default_disable=default_disable, fallback_disable=fallback_disable
+    )
+    if _has_top_level_implication(rest):
+        return (_parse_implication(rest, clock, disable),)
+    chunks = [c.strip() for _, c in _split_top_level(rest, ("&&",))]
+    if len(chunks) < 2:
+        return (_parse_implication(rest, clock, disable),)
+    inner = [_strip_outer_parens(c) for c in chunks]
+    flags = [_has_top_level_implication(c) for c in inner]
+    if not any(flags):
+        return (_parse_implication(rest, clock, disable),)
+    if not all(flags):
+        raise LowerError(
+            f"cannot mix implications and plain booleans in one conjunction; "
+            f"split into separate properties: {rest!r}"
+        )
+    return tuple(_parse_implication(c, clock, disable) for c in inner)
+
+
+def _strip_outer_parens(text: str) -> str:
+    s = text.strip()
+    while s.startswith("(") and s.endswith(")") and _skip_balanced_paren(s, 0) == len(s):
+        s = s[1:-1].strip()
+    return s
+
+
+def _skip_balanced_paren(text: str, start: int) -> int:
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
+def _has_top_level_implication(text: str) -> bool:
+    return len(_split_top_level(text, ("|->", "|=>"))) == 2
+
+
+def _parse_implication(rest: str, clock: str, disable: str | None) -> Property:
     parts = _split_top_level(rest, ("|->", "|=>"))
     if len(parts) > 2:
         raise LowerError(f"chained implications are not supported: {rest!r}")
@@ -853,12 +930,13 @@ def _emit_check(
 
 
 AUTO_COVER_SUFFIX = "__cov"
-_LABEL_SUFFIX = re.compile(r"(?:__c\d+|__cov)$")
+CONJUNCT_SUFFIX = "__k"
+_LABEL_SUFFIX = re.compile(r"(?:__k\d+)?(?:__c\d+|__cov)?$")
 
 
 def base_label(label: str) -> str:
-    """Map a lowered label (``a_x__c1``, ``a_x__cov``) back to its source label (``a_x``)."""
-    return _LABEL_SUFFIX.sub("", label.split(".")[-1])
+    """Map a lowered label (``a_x__c1``, ``a_x__k2__cov``) back to its source label (``a_x``)."""
+    return _LABEL_SUFFIX.sub("", label.split(".")[-1], count=1)
 
 
 def _guard_depth(*reads: int) -> int:
@@ -1053,15 +1131,15 @@ def lower(
         fallback_disable = _reset_active(reset, reset_active_low)
     default_clock = defaults.clock or "clk"
 
-    def parse(body: str) -> Property:
-        return parse_property_body(
+    def parse(body: str) -> tuple[Property, ...]:
+        return parse_property_bodies(
             body,
             default_clock=default_clock,
             default_disable=defaults.disable,
             fallback_disable=fallback_disable,
         )
 
-    parsed: dict[str, Property] = {}
+    parsed: dict[str, tuple[Property, ...]] = {}
     clocks: set[str] = set()
     skipped: list[str] = []
     for name, body in properties.items():
@@ -1070,7 +1148,7 @@ def lower(
         except LowerError as exc:
             skipped.append(f"property '{name}': {exc}")
             continue
-        clocks.add(parsed[name].clock)
+        clocks.update(p.clock for p in parsed[name])
 
     min_depth = reset_cycles if reset else 0
     checks: list[str] = []
@@ -1082,18 +1160,26 @@ def lower(
                 if stmt.property_name not in parsed:
                     skipped.append(f"{stmt.kind} '{stmt.label}' references dropped property")
                     continue
-                prop = parsed[stmt.property_name]
+                props = parsed[stmt.property_name]
             else:
                 assert stmt.inline_body is not None
-                prop = parse(stmt.inline_body)
-                clocks.add(prop.clock)
+                props = parse(stmt.inline_body)
+                clocks.update(p.clock for p in props)
             if stmt.label in seen:
                 raise LowerError(f"duplicate label '{stmt.label}'")
             seen.add(stmt.label)
             checks.append(f"  // {stmt.source.splitlines()[0]}")
-            produced.extend(
-                _lower_statement(stmt, prop, checks, min_depth=min_depth, auto_cover=auto_cover)
-            )
+            if len(props) == 1:
+                produced.extend(
+                    _lower_statement(stmt, props[0], checks, min_depth=min_depth, auto_cover=auto_cover)
+                )
+            else:
+                # Conjunction of implications: one check per conjunct, <label>__kN.
+                for k, prop in enumerate(props, start=1):
+                    part = replace(stmt, label=f"{stmt.label}{CONJUNCT_SUFFIX}{k}")
+                    produced.extend(
+                        _lower_statement(part, prop, checks, min_depth=min_depth, auto_cover=auto_cover)
+                    )
         except LowerError as exc:
             skipped.append(f"{stmt.kind} '{stmt.label}': {exc}")
             continue

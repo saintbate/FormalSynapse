@@ -308,6 +308,58 @@ def test_shallow_pass_continues_for_kill(tmp_path: Path, monkeypatch: pytest.Mon
     assert "```diff" in repair
 
 
+SKIPPY = GOOD.replace(
+    "`endif",
+    "property p_t_chain;\n    @(posedge clk) disable iff (!rst_n)\n"
+    "    a |=> b[*2];\nendproperty\na_t_chain: assert property (p_t_chain);\n`endif",
+)
+
+
+def test_skipped_statements_are_fed_back_and_stripped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A PASS whose block has unproven (skipped) statements is not a finished turn."""
+    from dataclasses import replace as dc_replace
+
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.sva_lower import lower
+
+    def fake_verify(_dut: Path, sva: str, *_a: object, **_k: object) -> VerifyResult:
+        low = lower(sva, fallback_disable="!rst_n")
+        return dc_replace(_result("PASS"), lowered=low)
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify)
+    monkeypatch.setattr(cegar_mod, "score_kill", lambda *_a, **_k: pytest.fail("min_kill=0: no scoring"))
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    fixed = GOOD.replace("p_t_good", "p_t_fix").replace("a_t_good", "a_t_fix")
+    gen = Scripted([SKIPPY, fixed])
+    traj = run_block(dut_path=dut, spec_path=spec, top="t", generator=gen, workdir=tmp_path, max_feedback=2)
+    assert traj.turns == 2, [a.result.status for a in traj.attempts]
+    first, second = traj.attempts
+    assert first.proven and first.skipped and not first.complete
+    assert second.complete
+    assert traj.winner is second
+    repair = gen.seen[1][-1].content
+    assert "could NOT check" in repair and "p_t_chain" in repair
+    assert "p_t_chain" not in repair.split("## Kept")[1], "skipped property must be stripped from kept"
+    # The second block is kept survivors + the fix, without the skipped chain property.
+    assert "p_t_good" in second.sva and "p_t_fix" in second.sva and "p_t_chain" not in second.sva
+
+
+def test_drop_duplicates_keeps_proven_copy() -> None:
+    from formalsynapse.sva_edit import drop_duplicates
+
+    addition = GOOD.replace("`endif", "property p_new;\n  @(posedge clk) a |=> b;\nendproperty\n"
+                            "a_new: assert property (p_new);\n`endif")
+    edited, dropped = drop_duplicates(GOOD, addition)
+    assert set(dropped) == {"a_t_good", "p_t_good"}
+    assert "p_t_good" not in edited and "a_t_good" not in edited
+    assert "p_new" in edited and "a_new: assert property (p_new)" in edited
+    untouched, none = drop_duplicates("", addition)
+    assert untouched == addition and none == ()
+
+
 def test_zero_valid_mutants_does_not_spin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from formalsynapse import cegar as cegar_mod
     from formalsynapse.gate import KillReport

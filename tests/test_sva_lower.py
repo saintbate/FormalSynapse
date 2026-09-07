@@ -414,6 +414,36 @@ def test_sva_boolean_keywords_become_verilog_operators() -> None:
         lower("a_x: assert property (@(posedge clk) (a ##1 b) or c |-> d);", auto_cover=False)
 
 
+def test_conjunction_of_implications_lowers_to_one_check_per_conjunct() -> None:
+    from formalsynapse.sva_lower import base_label
+
+    text = """
+property p_grant_follows_req;
+    @(posedge clk) disable iff (!rst_n)
+    (grant[1] |-> $past(req[1])) &&
+    (grant[0] |-> $past(req[0]));
+endproperty
+a_grant_follows_req: assert property (p_grant_follows_req);
+property p_legal;
+    @(posedge clk) disable iff (!rst_n)
+    (state == 2'd0) |=> (state == 2'd1) and
+    (state == 2'd1) |=> (state == 2'd0);
+endproperty
+a_legal: assert property (p_legal);
+"""
+    result = lower(text)
+    asserts = [a.name for a in result.assertions if a.kind == "assert"]
+    assert asserts == ["a_grant_follows_req__k1", "a_grant_follows_req__k2", "a_legal__k1", "a_legal__k2"]
+    covers = [a.name for a in result.assertions if a.kind == "cover"]
+    assert "a_grant_follows_req__k2__cov" in covers
+    assert {base_label(n) for n in result.names} == {"a_grant_follows_req", "a_legal"}
+    assert not result.skipped
+    checks = "\n".join(ln for ln in result.verilog.splitlines() if not ln.strip().startswith("//"))
+    assert "a_grant_follows_req__k2: assert" in checks and "$past(req[0])" in checks
+    with pytest.raises(LowerError, match="mix implications"):
+        lower("a_x: assert property (@(posedge clk) (a |-> b) && c);", auto_cover=False)
+
+
 def test_reset_state_via_rose_is_accepted_and_bare_reset_is_not() -> None:
     ok = lower("a_r: assert property (@(posedge clk) disable iff (!rst_n) $rose(rst_n) |-> q == 0);", reset="rst_n")
     assert "a_r" in ok.names

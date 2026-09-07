@@ -70,6 +70,51 @@ def merge_sva(kept: str, addition: str) -> str:
     return wrap_formal(a.rstrip() + "\n\n" + b)
 
 
+def declared_names(sva: str) -> tuple[set[str], set[str]]:
+    """(property names, statement labels) declared in a block, lower-cased. Comments ignored."""
+    text = blank_comments(unwrap_formal(sva), strings=True)
+    props = {m.group("name").lower() for m in _PROP.finditer(text)}
+    labels = {m.group("label").lower() for m in _LABELED.finditer(text)}
+    return props, labels
+
+
+def drop_duplicates(kept: str, addition: str) -> tuple[str, tuple[str, ...]]:
+    """Remove from ``addition`` any label or property already declared in ``kept``.
+
+    CEGAR tells the model "do not copy the kept properties back"; when it does anyway, the
+    kept copy is the proven one, so the re-emitted statement is dropped rather than letting
+    the lowerer reject the whole turn as a duplicate. Returns (edited addition, dropped names).
+    """
+    props, labels = declared_names(kept)
+    if not props and not labels:
+        return addition, ()
+    text = unwrap_formal(addition)
+    if not text:
+        return addition, ()
+    clean = blank_comments(text, strings=True)
+    dropped: list[str] = []
+    ranges = _labeled_ranges(clean, labels)
+    dropped.extend(m.group("label") for m in _LABELED.finditer(clean) if m.group("label").lower() in labels)
+    # Statements that reference a re-emitted property go too, or they would dangle.
+    dup_props = {name.lower() for name, _, _ in _property_ranges(clean) if name.lower() in props}
+    for m in _LABELED.finditer(clean):
+        if m.group("label").lower() in labels:
+            continue
+        end = _statement_end(clean, m.end())
+        if end < 0:
+            continue
+        ref = _PROP_REF.search(clean, m.start(), end)
+        if ref is not None and ref.group(1).lower() in dup_props:
+            ranges.append((_line_start(clean, m.start()), end))
+            dropped.append(m.group("label"))
+    ranges.extend((a, b) for name, a, b in _property_ranges(clean) if name.lower() in props)
+    dropped.extend(name for name, _, _ in _property_ranges(clean) if name.lower() in props)
+    if not ranges:
+        return addition, ()
+    edited = _cut(text, sorted(set(ranges))).strip()
+    return wrap_formal(edited), tuple(dict.fromkeys(dropped))
+
+
 def strip_labels(sva: str, labels: tuple[str, ...]) -> str:
     """Drop labeled assert/assume/cover statements and orphaned property decls."""
     if not labels:

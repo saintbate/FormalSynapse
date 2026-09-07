@@ -190,6 +190,29 @@ def vacuity_user(*, kept_sva: str, vacuous: Sequence[str], depth: int) -> str:
     )
 
 
+def skipped_section(skipped: Sequence[str]) -> str:
+    """Paragraph listing statements the lowerer could not check (prepended to another repair)."""
+    items = clip_prompt_text("\n".join(f"- {s}" for s in skipped), REPORT_CHAR_BUDGET, label="skipped")
+    return (
+        "The harness could NOT check these statements, so they were deleted from the kept block "
+        "and count for nothing:\n"
+        f"{items}\n"
+        "Rewrite each as a SEPARATE property with ONE implication (antecedent |=> consequent or "
+        "antecedent |-> consequent). No `and`/`or` between implications, no nested property "
+        "operators, no sequences other than ##N / ##[m:n] delays.\n"
+    )
+
+
+def skipped_user(*, kept_sva: str, skipped: Sequence[str]) -> str:
+    """User message when the proof and kill bar are fine but some statements were never checked."""
+    kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA")
+    return (
+        skipped_section(skipped) + "\nEmit ONLY the rewritten property + assert (and cover) blocks "
+        "for those statements; use new names.\n\n"
+        f"## Kept (already proven; do not copy these back)\n```systemverilog\n{kept}\n```\n"
+    )
+
+
 def kill_unscored_user(*, kept_sva: str, attempted: int) -> str:
     """User message when every mutant ERROR'd, so kill cannot be scored."""
     kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA")
