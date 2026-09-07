@@ -113,6 +113,56 @@ def test_does_not_mutate_comments() -> None:
     assert len(adds) == 1
 
 
+def test_protected_names_from_design_context_are_not_mutated() -> None:
+    rtl = """\
+module m (input clk, input clr, input en, output reg [3:0] q);
+    always @(posedge clk or posedge clr) begin
+        if (clr) q <= 4'd0;
+        else if (en) q <= q + 4'd1;
+    end
+endmodule
+"""
+    unguarded = generate_mutants(rtl, max_mutants=16)
+    assert any("if (!clr)" in m.rtl for m in unguarded)  # 'clr' is not a default reset name
+    guarded = generate_mutants(rtl, max_mutants=16, protected=frozenset({"clk", "clr"}))
+    assert guarded
+    assert not any("if (!clr)" in m.rtl for m in guarded)
+
+
+def test_nba_after_if_is_not_relational() -> None:
+    rtl = """\
+module m (input clk, input rst_n, input en, input [3:0] a, input [3:0] b, output reg [3:0] q, output y);
+    always @(posedge clk) begin
+        if (en) q <= a;
+        else q <= b;
+    end
+    assign y = a <= b;
+endmodule
+"""
+    mutants = generate_mutants(rtl, max_mutants=16)
+    assert not any("q >= a" in m.rtl or "q >= b" in m.rtl for m in mutants)
+    assert any("a >= b" in m.rtl for m in mutants)
+
+
+def test_strings_are_not_mutated() -> None:
+    rtl = """\
+module m (input clk, input rst_n, input a, input b, output y);
+    assign y = a && b;
+    initial $display("a && b == c + d");
+endmodule
+"""
+    mutants = generate_mutants(rtl, max_mutants=16)
+    assert all('$display("a && b == c + d")' in m.rtl for m in mutants)
+    assert any("a || b" in m.rtl for m in mutants)
+
+
+def test_site_selection_is_deterministic_and_spread() -> None:
+    a = generate_mutants(ARITH, max_mutants=8)
+    b = generate_mutants(ARITH, max_mutants=8)
+    assert [m.rtl for m in a] == [m.rtl for m in b]
+    assert [m.name for m in a] == [f"{m.operator}_{i}" for i, m in enumerate(a)]
+
+
 def test_rtl_hunk_marks_golden_minus_and_mutant_plus() -> None:
     golden = "assign q_next = clear ? 4'd0 : qi - 4'd1;\n"
     mutant = "assign q_next = clear ? 4'd1 : qi - 4'd1;\n"

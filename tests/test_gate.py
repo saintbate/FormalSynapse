@@ -130,6 +130,49 @@ def test_evaluate_monkeypatched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert report.mutants
     assert report.kill_rate == 1.0
     assert (tmp_path / "work" / "mutants").is_dir()
+    js = report_json(report)
+    assert js["vacuous"] == [] and js["skipped"] == []
+
+
+def test_failed_prove_scores_no_kills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An SVA that FAILs on golden RTL fails on every mutant; those must not count as kills."""
+    from formalsynapse import gate as gate_mod
+
+    dut = tmp_path / "counter.sv"
+    dut.write_text(RTL)
+    calls: list[str] = []
+
+    def fake_verify(dut_path: Path, sva_text: str, top: str, **kwargs: object) -> VerifyResult:
+        calls.append(str(kwargs.get("run_name", "")))
+        return _result("FAIL")
+
+    monkeypatch.setattr(gate_mod, "verify", fake_verify)
+    report = evaluate(dut, SVA, "counter", tmp_path / "work", max_mutants=4)
+    assert not report.passed
+    assert report.mutants == ()
+    assert report.kill_rate == 0.0
+    assert calls == ["prove"]  # no cover on a failed prove, no mutants either
+
+
+def test_evaluate_unwraps_model_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import gate as gate_mod
+
+    dut = tmp_path / "counter.sv"
+    dut.write_text(RTL)
+    seen: list[str] = []
+
+    def fake_verify(dut_path: Path, sva_text: str, top: str, **kwargs: object) -> VerifyResult:
+        seen.append(sva_text)
+        return _result("PASS")
+
+    monkeypatch.setattr(gate_mod, "verify", fake_verify)
+    raw = "Here is the block:\n```systemverilog\n" + SVA + "```\nHope that helps."
+    evaluate(dut, raw, "counter", tmp_path / "work", max_mutants=0)
+    assert seen and "```" not in seen[0] and "a_counter_inc" in seen[0]
+    # a clean hand-written block is passed through byte-for-byte
+    seen.clear()
+    evaluate(dut, SVA, "counter", tmp_path / "work2", max_mutants=0)
+    assert seen[0] == SVA
 
 
 skip_no_sby = pytest.mark.skipif(not have_sby(), reason="sby/yosys/z3 not installed")
@@ -144,7 +187,9 @@ def test_gate_smoke_counter(tmp_path: Path) -> None:
         root / "counter.sva.sv",
         "counter",
         tmp_path,
-        depth=12,
+        # With the reset assumption the 4-bit counter starts at 0, so the wrap cover needs
+        # 17 cycles (it used to be "reached" from an arbitrary pre-reset state).
+        depth=20,
         timeout_s=120.0,
         max_mutants=4,
     )

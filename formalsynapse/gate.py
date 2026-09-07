@@ -14,6 +14,8 @@ from pathlib import Path
 
 from formalsynapse.design_context import DesignContext, extract_context
 from formalsynapse.mutate import Mutant, generate_mutants
+from formalsynapse.sva_grammar import ExtractError, extract_sva
+from formalsynapse.sva_lower import LowerError, blank_comments, lower
 from formalsynapse.verify_harness import VerifyResult, verify
 
 _IDENT = re.compile(r"\b([A-Za-z_][A-Za-z_0-9]*)\b")
@@ -162,6 +164,16 @@ class GateReport:
         return self.cover.status == "PASS"
 
     @property
+    def vacuous(self) -> tuple[str, ...]:
+        """Assert labels whose antecedent was never reachable within the bound."""
+        return self.cover.vacuous_assertions if self.cover is not None else ()
+
+    @property
+    def skipped(self) -> tuple[str, ...]:
+        """Statements the lowerer dropped; they are not part of the proof."""
+        return self.prove.skipped
+
+    @property
     def passed(self) -> bool:
         prove_ok = self.prove.status == "PASS"
         cover_ok = self.vacuity_ok is not False
@@ -170,7 +182,7 @@ class GateReport:
 
 def _identifiers(text: str) -> set[str]:
     names: set[str] = set()
-    for match in _IDENT.finditer(text):
+    for match in _IDENT.finditer(blank_comments(text, strings=True)):
         name = match.group(1)
         if name in _SV_KW or name.startswith("$"):
             continue
@@ -208,7 +220,36 @@ def coi_report(rtl: str, top: str, sva: str) -> CoiReport:
 
 
 def _sva_has_cover(sva: str) -> bool:
-    return bool(re.search(r"\bcover\b", sva))
+    return bool(re.search(r"\bcover\b", blank_comments(sva, strings=True)))
+
+
+def _unwrap_model_output(sva_text: str) -> str:
+    """Saved candidates may carry fences, ``<think>`` wrappers or prose; extract the block.
+
+    A block that already lowers to at least one assert is returned unchanged, so hand-written
+    files are never rewritten. Only when lowering fails (or proves nothing) is the model-output
+    extractor tried, and only if the extracted block lowers to an assert is it used; otherwise
+    the original text, and its error, is what the gate reports.
+    """
+    try:
+        if lower(sva_text).proves_something:
+            return sva_text
+    except LowerError:
+        pass
+    try:
+        extracted = extract_sva(sva_text)
+        if not lower(extracted).proves_something:
+            return sva_text
+    except (ExtractError, LowerError):
+        return sva_text
+    return extracted
+
+
+def _has_cover_checks(prove: VerifyResult, sva_text: str) -> bool:
+    """True when a cover run has something to reach (auto-covers included)."""
+    if prove.lowered is not None:
+        return any(a.kind == "cover" for a in prove.lowered.assertions)
+    return _sva_has_cover(sva_text)
 
 
 def score_kill(
@@ -224,10 +265,16 @@ def score_kill(
     timeout_s: float = 60.0,
     clock: str = "clk",
     mutant_root: Path | None = None,
+    strict: bool = False,
 ) -> KillReport:
     """Run the SVA against each mutant. A FAIL is a kill; a PASS is a miss."""
     rtl = dut.read_text(encoding="utf-8")
-    chosen = tuple(mutants) if mutants is not None else generate_mutants(rtl, max_mutants=max_mutants)
+    if mutants is not None:
+        chosen = tuple(mutants)
+    else:
+        ctx = extract_context(rtl, top)
+        protected = frozenset(n for n in (ctx.clock, ctx.reset) if n)
+        chosen = generate_mutants(rtl, max_mutants=max_mutants, protected=protected)
     chosen = chosen[: max(0, max_mutants)]
     root = mutant_root if mutant_root is not None else workdir / "mutants"
     outcomes: list[MutantOutcome] = []
@@ -247,6 +294,7 @@ def score_kill(
             run_name=f"mutant-{mutant.name}",
             extra_files=extra_files,
             clock=clock,
+            strict=strict,
         )
         outcomes.append(MutantOutcome(mutant=mutant, result=result))
     return KillReport(mutants=tuple(outcomes))
@@ -266,14 +314,18 @@ def evaluate(
     mutants: Sequence[Mutant] | None = None,
     extra_files: tuple[Path, ...] = (),
     clock: str = "clk",
+    strict: bool = False,
 ) -> GateReport:
-    """Run prove + optional cover + COI + mutation kill on one pair.
+    """Run prove + cover (vacuity) + COI + mutation kill on one pair.
 
-    ``mutants`` overrides the cheap local mutator (used for AssertLLM2
-    shipped mutants). Extra compile units are passed through to ``sby``.
+    Every assert's antecedent gets an automatic cover, so the cover run is always meaningful
+    when the block has an implication: an unreachable antecedent fails the gate. ``mutants``
+    overrides the cheap local mutator (used for AssertLLM2 shipped mutants). ``strict``
+    rejects ``assume``/verbatim (use it for anything a model wrote).
     """
     rtl = dut.read_text(encoding="utf-8")
     sva_text = sva.read_text(encoding="utf-8") if isinstance(sva, Path) else sva
+    sva_text = _unwrap_model_output(sva_text)
     label = block or top
     prove = verify(
         dut,
@@ -286,9 +338,10 @@ def evaluate(
         run_name="prove",
         extra_files=extra_files,
         clock=clock,
+        strict=strict,
     )
     cover_result: VerifyResult | None = None
-    if run_cover and _sva_has_cover(sva_text):
+    if run_cover and prove.status == "PASS" and _has_cover_checks(prove, sva_text):
         cover_result = verify(
             dut,
             sva_text,
@@ -300,26 +353,34 @@ def evaluate(
             run_name="cover",
             extra_files=extra_files,
             clock=clock,
+            strict=strict,
         )
     coi = coi_report(rtl, top, sva_text)
-    kill = score_kill(
-        dut,
-        sva_text,
-        top,
-        workdir,
-        max_mutants=max_mutants,
-        mutants=mutants,
-        extra_files=extra_files,
-        depth=depth,
-        timeout_s=timeout_s,
-        clock=clock,
-    )
+    # An SVA that fails on the golden RTL fails on every mutant too; those are not kills.
+    # Vacuous asserts cannot kill anything either, so kill is scored on real proofs only.
+    scorable = prove.status == "PASS" and (cover_result is None or cover_result.status == "PASS")
+    outcomes: tuple[MutantOutcome, ...] = ()
+    if scorable:
+        kill = score_kill(
+            dut,
+            sva_text,
+            top,
+            workdir,
+            max_mutants=max_mutants,
+            mutants=mutants,
+            extra_files=extra_files,
+            depth=depth,
+            timeout_s=timeout_s,
+            clock=clock,
+            strict=strict,
+        )
+        outcomes = kill.mutants
     return GateReport(
         block=label,
         prove=prove,
         cover=cover_result,
         coi=coi,
-        mutants=kill.mutants,
+        mutants=outcomes,
     )
 
 
@@ -331,6 +392,10 @@ def report_json(report: GateReport) -> dict[str, object]:
         "prove": report.prove.status,
         "cover": None if report.cover is None else report.cover.status,
         "vacuity_ok": report.vacuity_ok,
+        "vacuous": list(report.vacuous),
+        "unreached_covers": list(report.cover.unreached_covers) if report.cover is not None else [],
+        "skipped": list(report.skipped),
+        "reset_assumed": report.prove.lowered.reset if report.prove.lowered is not None else None,
         "coi": asdict(report.coi),
         "mutants": len(report.mutants),
         "valid_mutants": len(report.valid_mutants),

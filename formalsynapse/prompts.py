@@ -18,16 +18,35 @@ _KEEP_HEAD = re.compile(
 )
 _NUMBERED = re.compile(r"(?m)^\s*\d+\.\s+\S")
 
-_ACTIVE_LOW_RESET = frozenset({"rst_n", "reset_n", "resetn"})
+_ACTIVE_LOW_RESET = re.compile(r"(?i)^(?:\w*_)?(?:n[as]?(?:rst|reset)|[as]?(?:rst|reset)(?:n|_n|_ni|_n_i|_b))$")
 
 
-def system_prompt(*, clock: str = "clk", reset: str = "rst_n") -> str:
-    """System prompt with clock/reset names taken from the DUT, not hardcoded."""
-    active_low = reset.lower() in _ACTIVE_LOW_RESET
-    disable = f"!{reset}" if active_low else reset
-    clause = f"disable iff ({disable})"
-    polarity = "active-low" if active_low else "active-high"
-    ante = f"{reset} or {disable}" if disable != reset else reset
+def system_prompt(
+    *, clock: str = "clk", reset: str | None = "rst_n", reset_active_low: bool | None = None
+) -> str:
+    """System prompt with clock/reset names (and polarity) taken from the DUT, not hardcoded.
+
+    ``reset=None`` means the DUT has no reset port: the prompt then forbids ``disable iff``
+    instead of inventing an ``rst_n`` the design does not have.
+    """
+    if reset is None:
+        clause = ""
+        reset_rule = (
+            "- This DUT has NO reset port. Do not write `disable iff` and do not name rst_n/reset.\n"
+            "  Registers start from an arbitrary value; only assert behavior that follows from inputs."
+        )
+    else:
+        active_low = _ACTIVE_LOW_RESET.match(reset) is not None if reset_active_low is None else reset_active_low
+        disable = f"!{reset}" if active_low else reset
+        clause = f"disable iff ({disable})"
+        polarity = "active-low" if active_low else "active-high"
+        ante = f"{reset} or {disable}" if disable != reset else reset
+        reset_rule = (
+            f"- Reset `{reset}` is {polarity}. Never use {ante} as the antecedent.\n"
+            f"  {clause} already excludes reset. `{reset} |-> count == 0` means \"count is always 0\"\n"
+            "  and will FAIL. Encode the numbered post-reset behaviors instead (increment, hold,\n"
+            "  grant-follows-request, …)."
+        )
     return f"""\
 You are a formal hardware verification engineer. Emit ONLY a SystemVerilog assertion block.
 No prose, no markdown fences, no module/endmodule, no bind.
@@ -42,10 +61,7 @@ Rules:
 - No eventually / s_eventually / until / throughout / bind / module
 - Only name signals that appear in the DUT ports or declared internals
 - No vacuous antecedents (never (a && !a) |-> ...)
-- Reset `{reset}` is {polarity}. Never use {ante} as the antecedent.
-  {clause} already excludes reset. `{reset} |-> count == 0` means "count is always 0"
-  and will FAIL. Encode the numbered post-reset behaviors instead (increment, hold,
-  grant-follows-request, …).
+{reset_rule}
 - At most 6 properties. Finish every property (endproperty) and close `endif`. Never start a property you cannot finish.
 - Add a cover for each non-trivial antecedent as a sequence, not an implication.
 - Do not emit angle-bracket placeholders. Fill in real signal names from the DUT.
@@ -151,6 +167,24 @@ def cover_only_user(*, kept_sva: str) -> str:
         "Keep the covers. Emit ONLY new labeled assert properties for the numbered "
         "requirements. Every property needs a matching assert, not just a cover.\n\n"
         f"## Kept (covers only; do not copy these back)\n```systemverilog\n{kept}\n```\n"
+    )
+
+
+def vacuity_user(*, kept_sva: str, vacuous: Sequence[str], depth: int) -> str:
+    """User message after a BMC PASS whose antecedents were never reachable (vacuous proof)."""
+    kept = clip_prompt_text(kept_sva, SVA_CHAR_BUDGET, label="kept SVA") or (
+        "(none — emit a full replacement block)"
+    )
+    labels = ", ".join(vacuous)
+    return (
+        f"BMC passed, but the antecedent of these asserts is never true within {depth} cycles, "
+        f"so they were proven vacuously and the harness deleted them: {labels}\n"
+        "A vacuous assert proves nothing and cannot kill mutants.\n"
+        "Write replacement properties whose antecedent actually happens (an input the "
+        "environment can drive, or a state the design reaches in a few cycles). Never use "
+        "contradictions like (a && !a), the reset signal, or deep counters as antecedents.\n"
+        "Emit ONLY the replacement property + assert blocks.\n\n"
+        f"## Kept (already proven; do not copy these back)\n```systemverilog\n{kept}\n```\n"
     )
 
 

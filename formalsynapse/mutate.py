@@ -12,10 +12,13 @@ pairs, binary ``+``/``-``, and simple ``if (ident)`` polarity flips.
 from __future__ import annotations
 
 import difflib
+import random
 import re
+import zlib
 from dataclasses import dataclass
 
 from formalsynapse.sva_inject import strip_formal_blocks
+from formalsynapse.sva_lower import blank_comments
 
 # Longest token first so ``<=`` is not split into ``<`` + ``=``.
 _OPS: tuple[tuple[str, str, str], ...] = (
@@ -31,10 +34,14 @@ _OPS: tuple[tuple[str, str, str], ...] = (
     ("sub_add", "-", "+"),
 )
 
-_IF_IDENT = re.compile(r"\bif\s*\(\s*(!?)\s*([A-Za-z_]\w*)\s*\)")
-_SKIP_LINE = re.compile(r"\b(rst_n|reset|localparam|parameter)\b", re.IGNORECASE)
-_PROTECTED_UNARY = frozenset({"rst_n", "reset", "clk", "clock"})
-_NBA_LVALUE = re.compile(r"^\s*(?:begin\s+)?(?:[\w\.]+\s*:\s*)?[\w\.\[\]]+\s*$")
+# ``if (en)``, ``if (!en)``, ``if (req[0])``, ``if (!next_grant[1])``
+_IF_IDENT = re.compile(r"\bif\s*\(\s*(!?)\s*([A-Za-z_]\w*(?:\s*\[[^\]\n]+\])?)\s*\)")
+_SKIP_LINE = re.compile(r"\b(localparam|parameter|posedge|negedge|always)\b", re.IGNORECASE)
+_DEFAULT_PROTECTED = frozenset({"rst_n", "rst", "reset", "reset_n", "resetn", "clk", "clock"})
+# Text between the last statement boundary and ``<=`` that makes it a non-blocking assignment:
+# an optional ``begin``/case-label, then a bare lvalue (``q``, ``mem[i]``, ``s.f``).
+_NBA_LVALUE = re.compile(r"^\s*(?:begin\s+)?(?:[\w\.']+\s*:\s*)?[\w\.\[\]]+\s*$")
+_STMT_BOUNDARY = re.compile(r"[;)]|\b(?:begin|end|else)\b")
 _RELATIONAL = frozenset({"le_ge", "ge_le"})
 
 
@@ -84,13 +91,8 @@ def rtl_hunk(
 
 
 def _blank_comments(text: str) -> str:
-    """Replace comment characters with spaces, preserving offsets."""
-
-    def blank(match: re.Match[str]) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
-
-    text = re.sub(r"/\*.*?\*/", blank, text, flags=re.S)
-    return re.sub(r"//[^\n]*", blank, text)
+    """Replace comment and string-literal characters with spaces, preserving offsets."""
+    return blank_comments(text, strings=True)
 
 
 def _line_span(text: str, index: int) -> tuple[str, int]:
@@ -109,7 +111,22 @@ def _prev_nons(text: str, index: int) -> str:
 
 
 def _looks_like_nba(line: str, col: int) -> bool:
-    return bool(_NBA_LVALUE.match(line[:col]))
+    """``<=`` is a non-blocking assignment when only a bare lvalue precedes it in its statement.
+
+    Handles ``if (en) q <= q + 1;`` and ``else q <= 0;`` (statement starts after ``)``/``else``),
+    while ``if (a <= b)`` and ``assign x = a <= b;`` stay relational.
+    """
+    before = line[:col]
+    last = None
+    for m in _STMT_BOUNDARY.finditer(before):
+        last = m
+    stmt = before[last.end() :] if last is not None else before
+    return bool(_NBA_LVALUE.match(stmt))
+
+
+def _protected_re(names: frozenset[str]) -> re.Pattern[str]:
+    alts = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(rf"\b(?:{alts})\b", re.IGNORECASE)
 
 
 def _bracket_depth(text: str, index: int) -> int:
@@ -126,17 +143,27 @@ def _replace_once(text: str, start: int, end: int, repl: str) -> str:
     return text[:start] + repl + text[end:]
 
 
-def generate_mutants(dut_text: str, *, max_mutants: int = 8) -> tuple[Mutant, ...]:
+def generate_mutants(
+    dut_text: str,
+    *,
+    max_mutants: int = 8,
+    protected: frozenset[str] = frozenset(),
+) -> tuple[Mutant, ...]:
     """Return up to ``max_mutants`` single-site mutants of ``dut_text``.
 
-    The formal block is stripped first. Sites on reset / localparam lines
-    are skipped so we do not produce modules that never leave reset.
-    Non-blocking assignments (``count <= ...``) are not treated as ``<=``.
+    The formal block is stripped first. Sites on lines that mention a ``protected`` name (the
+    DUT's clock and reset from :mod:`design_context`, plus the common default names), a
+    parameter, or a sensitivity list are skipped so we do not produce modules that never leave
+    reset. Non-blocking assignments (``count <= ...``) are not treated as ``<=``.
+
+    Site selection is deterministic per DUT text (seeded shuffle): one mutant per operator
+    first, then the remaining sites spread across the file rather than clustered at the top.
     """
     body = strip_formal_blocks(dut_text)
     scan = _blank_comments(body)
     found: list[Mutant] = []
     seen_rtl: set[str] = set()
+    guarded = _protected_re(protected | _DEFAULT_PROTECTED)
 
     for op_name, src, dst in _OPS:
         start = 0
@@ -147,7 +174,7 @@ def generate_mutants(dut_text: str, *, max_mutants: int = 8) -> tuple[Mutant, ..
             nxt = idx + len(src)
             line, col = _line_span(scan, idx)
             start = nxt
-            if _SKIP_LINE.search(line):
+            if _SKIP_LINE.search(line) or guarded.search(line):
                 continue
             if op_name in _RELATIONAL and _looks_like_nba(line, col):
                 continue
@@ -177,10 +204,10 @@ def generate_mutants(dut_text: str, *, max_mutants: int = 8) -> tuple[Mutant, ..
 
     for match in _IF_IDENT.finditer(scan):
         bang, ident = match.group(1), match.group(2)
-        if ident.lower() in _PROTECTED_UNARY:
+        if guarded.fullmatch(ident):
             continue
         line, _col = _line_span(scan, match.start())
-        if _SKIP_LINE.search(line):
+        if _SKIP_LINE.search(line) or guarded.search(line):
             continue
         flipped = "" if bang else "!"
         repl = f"if ({flipped}{ident})"
@@ -197,13 +224,21 @@ def generate_mutants(dut_text: str, *, max_mutants: int = 8) -> tuple[Mutant, ..
             )
         )
 
+    rng = random.Random(zlib.crc32(body.encode("utf-8")))
+    shuffled = list(found)
+    rng.shuffle(shuffled)
     ordered: list[Mutant] = []
     used_ops: set[str] = set()
-    for mutant in found:
+    for mutant in shuffled:
         if mutant.operator not in used_ops:
             ordered.append(mutant)
             used_ops.add(mutant.operator)
-    for mutant in found:
+    for mutant in shuffled:
         if mutant not in ordered:
             ordered.append(mutant)
-    return tuple(ordered[: max(0, max_mutants)])
+    chosen = ordered[: max(0, max_mutants)]
+    # Stable names: numbered by final position, not by discovery order.
+    return tuple(
+        Mutant(name=f"{m.operator}_{i}", operator=m.operator, description=m.description, rtl=m.rtl)
+        for i, m in enumerate(chosen)
+    )

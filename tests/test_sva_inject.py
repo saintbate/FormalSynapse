@@ -38,6 +38,38 @@ def test_inject_empty_block() -> None:
         inject(DUT, "  // only comment\n", "demo")
 
 
+def test_strip_keeps_else_branch_of_formal_region() -> None:
+    dut = """\
+module m (input clk);
+`ifdef FORMAL
+    logic f_only;
+`else
+    logic synth_only;
+`endif
+`ifdef FORMAL
+    logic f_two;
+`elsif SIM
+    logic sim_only;
+`else
+    logic synth_two;
+`endif
+endmodule
+"""
+    out = strip_formal_blocks(dut)
+    assert "f_only" not in out and "f_two" not in out
+    assert "logic synth_only;" in out
+    assert "`ifdef SIM" in out and "sim_only" in out and "synth_two" in out
+    assert out.count("`ifdef") == 1 and out.count("`endif") == 1
+    assert out.count("`else") == 1
+
+
+def test_endmodule_inside_string_is_ignored() -> None:
+    dut = 'module m (input clk);\n    initial $display("endmodule");\n    logic x;\nendmodule\n'
+    out = inject(dut, "  logic f;\n", "m")
+    assert out.index("logic f;") > out.index('$display("endmodule")')
+    assert out.rstrip().endswith("endmodule")
+
+
 def test_strip_and_reinject_idempotent() -> None:
     once = inject(DUT, "  logic f_a;\n", "demo")
     twice = inject_clean(once, "  logic f_b;\n", "demo")

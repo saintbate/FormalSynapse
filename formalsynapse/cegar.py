@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from formalsynapse.design_context import extract_context
@@ -25,6 +25,7 @@ from formalsynapse.prompts import (
     refinement_user,
     slot_repair_user,
     system_prompt,
+    vacuity_user,
     zero_shot_user,
 )
 from formalsynapse.sva_edit import has_assert, merge_sva, strip_labels, unwrap_formal
@@ -45,6 +46,7 @@ class Attempt:
     valid_mutants: int = 0
     attempted_mutants: int = 0
     unkilled: tuple[MutantHunk, ...] = ()
+    cover: VerifyResult | None = None
 
     @property
     def kill_rate(self) -> float:
@@ -53,9 +55,23 @@ class Attempt:
         return self.killed / self.valid_mutants
 
     @property
+    def vacuous(self) -> tuple[str, ...]:
+        """Assert labels whose antecedent the cover run could not reach."""
+        return self.cover.vacuous_assertions if self.cover is not None else ()
+
+    @property
     def proven(self) -> bool:
-        """BMC PASS with at least one labeled assert/assume. Covers alone are not a prove."""
-        return self.result.ok and has_assert(self.sva)
+        """BMC PASS on at least one lowered assert, and no assert was vacuous.
+
+        The lowered block is the ground truth: a PASS whose asserts were all skipped by the
+        lowerer, or whose antecedents are unreachable, is not a proof.
+        """
+        if not self.result.ok or self.vacuous:
+            return False
+        lowered = self.result.lowered
+        if lowered is not None:
+            return lowered.proves_something
+        return has_assert(self.sva)
 
     def meets_kill(self, min_kill: float) -> bool:
         """True when kill is not required, cannot be scored, or clears the bar."""
@@ -90,16 +106,21 @@ class Trajectory:
     @property
     def status(self) -> str:
         chosen = self.winner
-        return chosen.result.status if chosen is not None else "ERROR"
+        if chosen is None:
+            return "ERROR"
+        if chosen.result.ok and not chosen.proven:
+            return "VACUOUS"
+        return chosen.result.status
 
     @property
     def ok(self) -> bool:
+        """The winner is a real proof (asserts lowered, non-vacuous), not merely an sby PASS."""
         chosen = self.winner
-        return chosen is not None and chosen.result.ok
+        return chosen is not None and chosen.proven
 
     @property
     def first_pass(self) -> bool:
-        return bool(self.attempts) and self.attempts[0].result.ok
+        return bool(self.attempts) and self.attempts[0].proven
 
     @property
     def healed(self) -> bool:
@@ -207,8 +228,8 @@ def _winner_key(att: Attempt) -> tuple[int, int, int, int]:
     """Lower is better. A later FAIL must not beat an earlier prove."""
     if att.proven:
         return (0, -att.killed, -att.valid_mutants, att.turn)
-    if att.result.ok:
-        return (1, 0, 0, att.turn)
+    if att.result.ok:  # sby PASS but vacuous / nothing lowered
+        return (1, len(att.vacuous), 0, att.turn)
     if att.result.status == "FAIL":
         return (2, len(att.result.failed_assertions), att.turn, att.turn)
     return (3, 99, 0, att.turn)
@@ -246,15 +267,32 @@ def _apply_kill(att: Attempt, kill: KillReport, *, golden_rtl: str) -> Attempt:
         )
         for o in kill.survivors
     )
-    return Attempt(
-        att.turn,
-        att.sva,
-        att.result,
+    return replace(
+        att,
         killed=kill.killed,
         valid_mutants=len(kill.valid_mutants),
         attempted_mutants=len(kill.mutants),
         unkilled=hunks,
     )
+
+
+def _has_covers(result: VerifyResult) -> bool:
+    lowered = result.lowered
+    return lowered is not None and any(a.kind == "cover" for a in lowered.assertions)
+
+
+HISTORY_PAIRS = 1
+
+
+def _trim_history(messages: list[Message], *, keep_pairs: int = HISTORY_PAIRS) -> list[Message]:
+    """Keep system + zero-shot user + the last ``keep_pairs`` (assistant, user) exchanges.
+
+    Every repair message already carries the kept block and the diagnostic, so older turns add
+    nothing but tokens; a 14B model at 8k context would otherwise start truncating by turn 3.
+    """
+    head, tail = messages[:2], messages[2:]
+    keep = 2 * max(0, keep_pairs)
+    return head + (tail[-keep:] if keep else [])
 
 
 def run_block(
@@ -287,7 +325,14 @@ def run_block(
     context = ctx.render()
     user0 = zero_shot_user(module=top, spec=spec, rtl=clean_rtl, context=context)
     messages: list[Message] = [
-        Message("system", system_prompt(clock=ctx.clock or "clk", reset=ctx.reset or "rst_n")),
+        Message(
+            "system",
+            system_prompt(
+                clock=ctx.clock or "clk",
+                reset=ctx.reset,  # None: DUT has no reset, prompt forbids disable iff
+                reset_active_low=ctx.reset_active_low if ctx.reset else None,
+            ),
+        ),
         Message("user", user0),
     ]
     attempts: list[Attempt] = []
@@ -296,6 +341,7 @@ def run_block(
     n_cand = max(1, candidates)
     for turn in range(1, max_turns + 1):
         sample_temp = 0.5 if n_cand > 1 else None
+        messages = _trim_history(messages)
         try:
             with _with_temperature(generator, sample_temp):
                 raw_blocks = generate_sva_n(generator, messages, n_cand)
@@ -334,6 +380,7 @@ def run_block(
                 workdir=workdir,
                 run_name=f"cegar-{top}-{turn}-{i}",
                 extra_files=extra_files,
+                strict=True,
             )
             att = Attempt(turn, sva, result)
             if best is None or _rank(result) < _rank(best.result):
@@ -341,6 +388,21 @@ def run_block(
             if result.ok:
                 break
         assert best is not None
+        if best.result.ok and _has_covers(best.result):
+            # Vacuity check: every assert's antecedent must be reachable within the bound.
+            cover = verify(
+                dut_path,
+                best.sva,
+                top,
+                mode="cover",
+                depth=depth,
+                timeout_s=timeout_s,
+                workdir=workdir,
+                run_name=f"cegar-{top}-{turn}-cover",
+                extra_files=extra_files,
+                strict=True,
+            )
+            best = replace(best, cover=cover)
         if best.proven and min_kill > 0.0:
             kill = score_kill(
                 dut_path,
@@ -362,18 +424,23 @@ def run_block(
         if turn == max_turns:
             break
         if best.result.ok:
-            if best.meets_kill(min_kill):
+            if best.proven and best.meets_kill(min_kill):
                 break
-            kept = best.sva
             messages.append(Message("assistant", best.sva))
-            if not best.proven:
+            if best.vacuous:
+                kept = strip_labels(best.sva, best.vacuous)
+                repair = vacuity_user(kept_sva=kept, vacuous=best.vacuous, depth=depth)
+            elif not best.proven:
+                kept = best.sva
                 repair = cover_only_user(kept_sva=best.sva)
             elif best.valid_mutants == 0:
+                kept = best.sva
                 repair = kill_unscored_user(
                     kept_sva=best.sva,
                     attempted=best.attempted_mutants,
                 )
             else:
+                kept = best.sva
                 repair = kill_miss_user(
                     kept_sva=best.sva,
                     killed=best.killed,

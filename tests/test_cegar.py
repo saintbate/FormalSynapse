@@ -89,7 +89,9 @@ def test_healed_trajectory_logs_row(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert len(rows) == 1
     assert "a_t_bad" in str(rows[0]["counterexample"])
     assert "p_t_good" in str(rows[0]["fixed_attempt"])
-    assert gen.seen[0][0].content == SYSTEM_PROMPT
+    # `module t;` has no reset port, so the prompt must not invent rst_n
+    assert gen.seen[0][0].content != SYSTEM_PROMPT
+    assert "NO reset port" in gen.seen[0][0].content
     assert "increment" in gen.seen[0][1].content
     assert "Failed assertion" in gen.seen[1][3].content
     assert "a_t_bad" in gen.seen[1][3].content
@@ -442,6 +444,103 @@ def test_later_fail_keeps_earlier_prove(tmp_path: Path, monkeypatch: pytest.Monk
     assert traj.winner.turn == 1
     assert traj.winner.sva == GOOD
     assert traj.status == "PASS"
+
+
+VACUOUS = """\
+`ifdef FORMAL
+property p_t_vac;
+    @(posedge clk) disable iff (!rst_n)
+    (en && !en) |=> count == 0;
+endproperty
+a_t_vac: assert property (p_t_vac);
+property p_t_good;
+    @(posedge clk) disable iff (!rst_n)
+    en |=> count == $past(count) + 4'd1;
+endproperty
+a_t_good: assert property (p_t_good);
+`endif
+"""
+
+REPLACEMENT = """\
+`ifdef FORMAL
+property p_t_hold;
+    @(posedge clk) disable iff (!rst_n)
+    !en |=> count == $past(count);
+endproperty
+a_t_hold: assert property (p_t_hold);
+`endif
+"""
+
+
+def test_vacuous_pass_is_stripped_and_not_a_win(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BMC PASS + unreachable antecedent: the vacuous label is deleted in Python, the model is
+    asked for a replacement, and a vacuous attempt never counts as proven."""
+    from formalsynapse import cegar as cegar_mod
+    from formalsynapse.sva_lower import lower
+
+    calls: list[str] = []
+
+    def fake_verify(_dut: Path, sva: str, _top: str, **kw: object) -> VerifyResult:
+        mode = str(kw.get("mode", "bmc"))
+        calls.append(mode)
+        assert kw.get("strict") is True
+        lowered = lower(sva, reset="rst_n")
+        base = _result("PASS")
+        if mode == "cover":
+            unreached = ("a_t_vac__cov",) if "a_t_vac" in sva else ()
+            return VerifyResult(
+                **{
+                    **base.__dict__,
+                    "status": "FAIL" if unreached else "PASS",
+                    "mode": "cover",
+                    "lowered": lowered,
+                    "unreached_covers": unreached,
+                }
+            )
+        return VerifyResult(**{**base.__dict__, "lowered": lowered})
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    gen = Scripted([VACUOUS, REPLACEMENT])
+    traj = run_block(
+        dut_path=dut,
+        spec_path=spec,
+        top="t",
+        generator=gen,
+        workdir=tmp_path,
+        max_feedback=1,
+        candidates=1,
+    )
+    assert calls == ["bmc", "cover", "bmc", "cover"]
+    assert "a_t_good" in traj.attempts[1].sva and "a_t_hold" in traj.attempts[1].sva  # kept + new
+    first = traj.attempts[0]
+    assert first.result.ok and not first.proven
+    assert first.vacuous == ("a_t_vac",)
+    assert not traj.first_pass
+    repair = gen.seen[1][-1].content
+    assert "vacuous" in repair and "a_t_vac" in repair
+    assert "p_t_vac" not in repair.split("## Kept")[1]  # stripped from the kept block
+    assert traj.winner is not None and traj.winner.turn == 2
+    assert traj.ok and traj.healed
+
+
+def test_history_is_trimmed_to_last_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse import cegar as cegar_mod
+
+    monkeypatch.setattr(cegar_mod, "verify", lambda *_a, **_k: _result("FAIL", "Failed assertion a_t_bad"))
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t;\nendmodule\n")
+    spec.write_text("1. increment\n")
+    gen = Scripted([BAD, BAD, BAD, BAD])
+    run_block(dut_path=dut, spec_path=spec, top="t", generator=gen, workdir=tmp_path, max_feedback=3)
+    assert len(gen.seen) == 4
+    for i, msgs in enumerate(gen.seen):
+        assert msgs[0].role == "system" and msgs[1].role == "user"
+        assert len(msgs) == (2 if i == 0 else 4)  # system, user0, last assistant, last repair
 
 
 def test_suite_metrics() -> None:

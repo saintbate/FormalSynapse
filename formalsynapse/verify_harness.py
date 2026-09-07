@@ -15,19 +15,30 @@ Status semantics (these are the RLVR rewards of Phase 4, kept explicit and deter
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
 from formalsynapse import toolchain
+from formalsynapse.design_context import extract_context
 from formalsynapse.sby_config import Frontend, Mode, SbyConfig, SbyTask
 from formalsynapse.sva_inject import InjectError, inject_clean
-from formalsynapse.sva_lower import LoweredSVA, LowerError, collect_defines, lower
+from formalsynapse.sva_lower import (
+    AUTO_COVER_SUFFIX,
+    LoweredSVA,
+    LowerError,
+    base_label,
+    blank_comments,
+    collect_defines,
+    lower,
+)
 from formalsynapse.vcd_parser import CounterexampleReport, build_report, load_vcd
 
 Status = Literal["PASS", "FAIL", "ERROR", "TIMEOUT", "UNKNOWN"]
@@ -45,9 +56,14 @@ _RC_STATUS: dict[int, Status] = {0: "PASS", 2: "FAIL", 4: "UNKNOWN", 8: "TIMEOUT
 
 _FAILED_ASSERTION = re.compile(r"failed assertion\s+(\S+)\s+at\s+(\S+)\s+step\s+(\d+)", re.I)
 _ASSERT_FAILED = re.compile(r"Assert failed in\s+(\S+):\s+(\S+)")
-_UNREACHED = re.compile(r"Unreached cover statement at\s+(\S+)")
-_REACHED = re.compile(r"Reached cover statement at\s+(\S+)\s+in step\s+(\d+)")
+# smtbmc: "Unreached cover statement at <mod>: <label>" / "Reached cover statement in step N at <mod>: <label>"
+_UNREACHED = re.compile(r"Unreached cover statement at\s+\S+:\s*(\S+)")
+_REACHED = re.compile(r"Reached cover statement in step\s+(\d+)\s+at\s+\S+:\s*(\S+)")
 _ERROR_LINE = re.compile(r"(?:ERROR|error):\s*(.+)")
+# Yosys: "Warning: Identifier `\rst_n' is implicitly declared." An SVA naming a signal the DUT
+# does not have gets a free, undriven wire: assumes on it constrain nothing, asserts on it are
+# checked against an unconstrained value. That is never a proof.
+_IMPLICIT = re.compile(r"Identifier `\\(\w+)' is implicitly declared")
 
 
 @dataclass(frozen=True)
@@ -78,6 +94,18 @@ class VerifyResult:
     def ok(self) -> bool:
         return self.status == "PASS"
 
+    @property
+    def vacuous_assertions(self) -> tuple[str, ...]:
+        """Source labels whose auto-generated antecedent cover (``<label>__cov``) was unreached."""
+        return tuple(
+            dict.fromkeys(base_label(c) for c in self.unreached_covers if c.endswith(AUTO_COVER_SUFFIX))
+        )
+
+    @property
+    def skipped(self) -> tuple[str, ...]:
+        """Statements the lowerer could not translate; they were *not* proven."""
+        return self.lowered.skipped if self.lowered is not None else ()
+
     def summary(self) -> str:
         head = f"{self.status} (rc={self.exit_code}, mode={self.mode}, depth={self.depth}, {self.elapsed_s:.1f}s)"
         if self.failed_assertions:
@@ -86,6 +114,8 @@ class VerifyResult:
             head += f" @ step {self.failing_step}"
         if self.unreached_covers:
             head += f" unreached: {', '.join(self.unreached_covers)}"
+        if self.skipped:
+            head += f" skipped(not proven): {len(self.skipped)}"
         return head
 
 
@@ -125,20 +155,37 @@ def prepare_sources(
     *,
     frontend: Frontend = "verilog",
     extra_files: tuple[Path, ...] = (),
+    strict: bool = False,
+    reset_assume: bool = True,
+    reset_cycles: int = 1,
+    auto_cover: bool = True,
 ) -> tuple[Path, LoweredSVA | None]:
     """Lower (unless slang) and inject the SVA; write ``<top>.sv`` plus extras into ``run_dir``.
 
-    Raises :class:`LowerError` or :class:`InjectError`.
+    The DUT's reset (name and polarity from :func:`extract_context`) is assumed active at step 0
+    unless ``reset_assume`` is off. ``strict`` forbids ``assume``/verbatim in the SVA.
+
+    Raises :class:`LowerError` or :class:`InjectError` (also for a missing ``extra_files`` entry:
+    silently dropping an include file turns a real PASS into an elaboration error, or worse).
     """
     dut_text = dut_path.read_text()
-    extra_texts = [
-        extra.read_text(encoding="utf-8", errors="replace")
-        for extra in extra_files
-        if extra.is_file()
-    ]
+    missing = [str(extra) for extra in extra_files if not extra.is_file()]
+    if missing:
+        raise InjectError(f"extra file(s) not found: {', '.join(missing)}")
+    extra_texts = [extra.read_text(encoding="utf-8", errors="replace") for extra in extra_files]
     lowered: LoweredSVA | None = None
     if frontend == "verilog":
-        lowered = lower(sva_text, defines=collect_defines(dut_text, *extra_texts))
+        ctx = extract_context(dut_text, top)
+        lowered = lower(
+            sva_text,
+            defines=collect_defines(dut_text, *extra_texts),
+            reset=ctx.reset if reset_assume else None,
+            reset_active_low=ctx.reset_active_low,
+            reset_cycles=reset_cycles,
+            strict=strict,
+            auto_cover=auto_cover,
+            fallback_disable=ctx.reset_active,  # None when the DUT has no reset port
+        )
         block = lowered.verilog
     else:
         block = sva_text
@@ -156,13 +203,13 @@ def _parse_log(
     failed: list[str] = []
     step: int | None = None
     for m in _FAILED_ASSERTION.finditer(log_text):
-        name = m.group(1).split(".")[-1]
+        name = base_label(m.group(1))
         if name not in failed:
             failed.append(name)
         step = int(m.group(3)) if step is None else min(step, int(m.group(3)))
     if not failed:
         for m in _ASSERT_FAILED.finditer(log_text):
-            name = m.group(2).split(".")[-1]
+            name = base_label(m.group(2))
             if name not in failed:
                 failed.append(name)
     errors: list[str] = []
@@ -172,31 +219,74 @@ def _parse_log(
             msg = em.group(1).strip()
             if msg not in errors:
                 errors.append(msg)
-    unreached = tuple(dict.fromkeys(m.group(1) for m in _UNREACHED.finditer(log_text)))
-    reached = tuple(dict.fromkeys(m.group(1) for m in _REACHED.finditer(log_text)))
+    unreached = tuple(dict.fromkeys(m.group(1).split(".")[-1] for m in _UNREACHED.finditer(log_text)))
+    reached = tuple(dict.fromkeys(m.group(2).split(".")[-1] for m in _REACHED.finditer(log_text)))
     return tuple(failed), step, tuple(errors), unreached, reached
 
 
+def _undeclared_in_sva(log_text: str, sva_text: str) -> tuple[str, ...]:
+    """Implicitly declared identifiers that the SVA (not the DUT) introduced."""
+    names = tuple(dict.fromkeys(m.group(1) for m in _IMPLICIT.finditer(log_text)))
+    if not names:
+        return ()
+    code = blank_comments(sva_text, strings=True)
+    return tuple(n for n in names if re.search(rf"(?<![\w$.]){re.escape(n)}\b", code))
+
+
+_KILL_GRACE_S = 5.0
+# sby gets ``timeout_s`` as its own solver timeout (rc 8); the harness only kills the process
+# group if sby overshoots that by this much (yosys elaboration is not covered by sby's timer).
+_TIMEOUT_GRACE_S = 60.0
+
+
+def _nothing_to_check(lowered: LoweredSVA, mode: Mode) -> str | None:
+    """Why a run would be meaningless: no assert to prove, or no cover to reach."""
+    if mode in ("bmc", "prove") and not lowered.proves_something and not lowered.verbatim_blocks:
+        detail = "; ".join(lowered.skipped) or "block contains only cover statements"
+        return f"no assertions were lowered, nothing to prove: {detail}"
+    if mode == "cover" and not any(a.kind == "cover" for a in lowered.assertions):
+        return "no cover statements to check"
+    return None
+
+
 def run_sby(sby_path: Path, *, timeout_s: float, extra_args: tuple[str, ...] = ()) -> tuple[int, str, bool]:
-    """Run ``sby -f <file>`` from the file's directory. Returns ``(rc, output, timed_out)``."""
+    """Run ``sby -f <file>`` from the file's directory. Returns ``(rc, output, timed_out)``.
+
+    sby is started in its own session so a harness timeout kills the whole process group
+    (yosys, the smtbmc python, and the z3/yices/boolector child), not just sby itself.
+    """
     sby = toolchain.find_tool("sby")
     if sby is None:
         raise FileNotFoundError("sby not found; run scripts/install_toolchain.sh")
     cmd = [str(sby), "-f", *extra_args, sby_path.name]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=sby_path.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=toolchain.tool_env(),
+        start_new_session=True,
+    )
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=sby_path.parent,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            env=toolchain.tool_env(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        out = (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        return 8, str(out), True
-    return proc.returncode, proc.stdout + proc.stderr, False
+        out, _ = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            out, _ = proc.communicate(timeout=_KILL_GRACE_S)
+        except subprocess.TimeoutExpired:  # pragma: no cover - SIGKILL already sent
+            out = ""
+        return 8, str(out or ""), True
+    return proc.returncode, out or "", False
+
+
+def _kill_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        time.sleep(0.5)
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:  # pragma: no cover - already gone
+        pass
 
 
 def verify(
@@ -213,13 +303,32 @@ def verify(
     frontend: Frontend = "verilog",
     extra_files: tuple[Path, ...] = (),
     clock: str = "clk",
+    strict: bool = False,
+    reset_assume: bool = True,
+    reset_cycles: int = 1,
+    auto_cover: bool = True,
 ) -> VerifyResult:
-    """Verify ``sva_text`` against ``dut_path``'s module ``top`` and classify the result."""
+    """Verify ``sva_text`` against ``dut_path``'s module ``top`` and classify the result.
+
+    A PASS is only reported when at least one ``assert`` was actually lowered and checked;
+    a block whose asserts were all skipped by the lowerer is an ERROR, not a proof.
+    """
     started = time.monotonic()
     run_dir = prepare_run_dir(workdir, run_name)
     (run_dir / "attempt.sva").write_text(sva_text)
     try:
-        _, lowered = prepare_sources(dut_path, sva_text, top, run_dir, frontend=frontend, extra_files=extra_files)
+        _, lowered = prepare_sources(
+            dut_path,
+            sva_text,
+            top,
+            run_dir,
+            frontend=frontend,
+            extra_files=extra_files,
+            strict=strict,
+            reset_assume=reset_assume,
+            reset_cycles=reset_cycles,
+            auto_cover=auto_cover,
+        )
     except LowerError as exc:
         (run_dir / "error.txt").write_text(f"SVA lowering error: {exc}\n")
         return _error_result(run_dir, f"SVA lowering error: {exc}", depth=depth, mode=mode, started=started)
@@ -227,14 +336,22 @@ def verify(
         (run_dir / "error.txt").write_text(f"injection error: {exc}\n")
         return _error_result(run_dir, f"injection error: {exc}", depth=depth, mode=mode, started=started)
 
+    if lowered is not None:
+        clock = lowered.clock
+        nothing = _nothing_to_check(lowered, mode)
+        if nothing is not None:
+            (run_dir / "error.txt").write_text(nothing + "\n")
+            result = _error_result(run_dir, nothing, depth=depth, mode=mode, started=started)
+            return replace(result, lowered=lowered)
+
     files = (f"{top}.sv", *(p.name for p in extra_files))
-    task = SbyTask("run", mode=mode, depth=depth, engine=engine)
+    task = SbyTask("run", mode=mode, depth=depth, engine=engine, timeout_s=max(1, int(timeout_s)))
     cfg = SbyConfig(top=top, files=files, tasks=(task,), frontend=frontend)
     sby_file = run_dir / "run.sby"
     sby_file.write_text(cfg.render())
 
     try:
-        rc, out, timed_out = run_sby(sby_file, timeout_s=timeout_s)
+        rc, out, timed_out = run_sby(sby_file, timeout_s=timeout_s + _TIMEOUT_GRACE_S)
     except FileNotFoundError as exc:
         return _error_result(run_dir, str(exc), depth=depth, mode=mode, started=started)
 
@@ -244,6 +361,14 @@ def verify(
     failed, step, errors, unreached, reached = _parse_log(log_text)
 
     status: Status = "TIMEOUT" if timed_out else _RC_STATUS.get(rc, "ERROR")
+    undeclared = _undeclared_in_sva(log_text, sva_text)
+    if undeclared and status in ("PASS", "FAIL", "UNKNOWN"):
+        status = "ERROR"
+        errors = (
+            "SVA names signal(s) the DUT does not declare (Yosys made them free wires): "
+            + ", ".join(undeclared),
+            *errors,
+        )
     if status == "ERROR" and not errors:
         tail = [line for line in out.splitlines() if line.strip()][-5:]
         errors = tuple(tail) or (f"sby exited with {rc}",)
@@ -273,6 +398,9 @@ def verify(
         report_lines.extend(f"  {e}" for e in errors)
     elif status == "PASS" and mode == "cover":
         report_lines.append("Reached cover statements: " + (", ".join(reached) or "(none listed)"))
+    if lowered is not None and lowered.skipped:
+        report_lines.append("Not proven (the lowerer skipped these; fix or delete them):")
+        report_lines.extend(f"  {item}" for item in lowered.skipped)
 
     return VerifyResult(
         status=status,

@@ -46,3 +46,27 @@ def test_merge_and_wrap() -> None:
 def test_has_assert_ignores_covers() -> None:
     assert has_assert(TWO)
     assert not has_assert("`ifdef FORMAL\nc_en: cover property (en);\n`endif")
+
+
+def test_has_assert_ignores_comments() -> None:
+    assert not has_assert("`ifdef FORMAL\n// a_x: assert property (p);\nc_en: cover property (en);\n`endif")
+
+
+def test_strip_handles_fatal_and_begin_end_action_blocks() -> None:
+    sva = """\
+`ifdef FORMAL
+a_one: assert property (@(posedge clk) a |-> b)
+    else $fatal;
+a_two: assert property (@(posedge clk) c |-> d)
+    else begin
+        $error("two; failed");
+        $fatal(1, "stop");
+    end
+a_keep: assert property (@(posedge clk) e |-> f);
+`endif
+"""
+    kept = unwrap_formal(strip_labels(sva, ("a_one", "a_two")))
+    assert "a_one" not in kept
+    assert "a_two" not in kept
+    assert "$fatal" not in kept
+    assert kept.strip() == "a_keep: assert property (@(posedge clk) e |-> f);"

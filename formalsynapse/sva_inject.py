@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from formalsynapse.sva_lower import strip_comments
+from formalsynapse.sva_lower import blank_comments, strip_comments
 
 
 class InjectError(ValueError):
@@ -40,13 +40,11 @@ def _module_span(dut_text: str, top: str) -> tuple[int, int]:
 
 
 def _blank_comments(text: str) -> str:
-    """Replace comment characters with spaces, preserving length and newlines."""
+    """Replace comment and string-literal characters with spaces, preserving length and newlines.
 
-    def blank(m: re.Match[str]) -> str:
-        return "".join("\n" if c == "\n" else " " for c in m.group(0))
-
-    text = re.sub(r"/\*.*?\*/", blank, text, flags=re.S)
-    return re.sub(r"//[^\n]*", blank, text)
+    ``$display("endmodule")`` must not end the module search.
+    """
+    return blank_comments(text, strings=True)
 
 
 def module_names(dut_text: str) -> list[str]:
@@ -80,11 +78,16 @@ _IFDEF_ANY = re.compile(r"^\s*`(ifdef|ifndef|elsif|else|endif)\b", re.M)
 
 
 def strip_formal_blocks(dut_text: str) -> str:
-    """Remove every ```ifdef FORMAL ... `endif`` region (preprocessor-depth aware)."""
+    """Remove every ```ifdef FORMAL ... `endif`` region (preprocessor-depth aware).
+
+    An ```else`` branch of the FORMAL region is what the non-formal build compiles, so its
+    lines are kept (the directives themselves are dropped). ```elsif X`` becomes ```ifdef X``.
+    """
     lines = dut_text.splitlines(keepends=True)
     out: list[str] = []
-    depth = 0
-    skipping = 0
+    skipping = 0  # nesting depth inside a FORMAL region being dropped
+    in_else = 0  # nesting depth inside the kept `else/`elsif branch of a FORMAL region
+    else_needs_endif = False  # the kept branch was opened as `ifdef X (from `elsif X)
     for line in lines:
         m = _IFDEF_ANY.match(line)
         if m is None:
@@ -96,17 +99,39 @@ def strip_formal_blocks(dut_text: str) -> str:
             entering = kind == "ifdef" and re.search(r"`ifdef\s+FORMAL\b", line) is not None
             if skipping:
                 skipping += 1
+            elif in_else:
+                in_else += 1
+                out.append(line)
             elif entering:
                 skipping = 1
             else:
-                depth += 1
                 out.append(line)
         elif kind == "endif":
             if skipping:
                 skipping -= 1
+            elif in_else:
+                in_else -= 1
+                if in_else or else_needs_endif:
+                    out.append(line)
+                if not in_else:
+                    else_needs_endif = False
             else:
-                depth = max(0, depth - 1)
                 out.append(line)
+        elif kind in ("else", "elsif") and skipping == 1:
+            # Leaving the dropped FORMAL branch; what follows is the non-formal build.
+            skipping = 0
+            in_else = 1
+            if kind == "elsif":
+                out.append(re.sub(r"^(\s*)`elsif\b", r"\1`ifdef", line))
+                else_needs_endif = True
+        elif kind in ("else", "elsif") and in_else == 1:
+            if else_needs_endif and kind == "else":
+                out.append(line)  # `else of the synthesized `ifdef X
+            else:
+                # `else after a kept branch: the remainder is FORMAL-only again.
+                in_else = 0
+                else_needs_endif = False
+                skipping = 1
         elif skipping == 0:
             out.append(line)
     return "".join(out)

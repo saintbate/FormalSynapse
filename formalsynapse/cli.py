@@ -34,6 +34,8 @@ def _print(msg: str) -> None:
 
 def _print_suite_attempt(name: str, att: Attempt) -> None:
     _print(f"[{name}] turn {att.turn}: {att.result.summary()}")
+    if att.vacuous:
+        _print(f"  vacuous (antecedent unreachable): {', '.join(att.vacuous)}")
     if att.valid_mutants:
         _print(f"  kill={att.killed}/{att.valid_mutants} ({100.0 * att.kill_rate:.0f}%)")
     if att.result.status == "ERROR" and att.result.errors:
@@ -144,9 +146,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
         timeout_s=args.timeout,
         workdir=Path(args.workdir),
         frontend=args.frontend,
+        extra_files=_unique_extras(tuple(Path(p) for p in (args.extra or []))),
+        strict=bool(args.strict),
+        reset_assume=not args.no_reset_assume,
+        reset_cycles=max(1, int(args.reset_cycles)),
     )
     _print(result.summary())
     _print(result.report)
+    if result.lowered is not None and result.lowered.reset is None and not args.no_reset_assume:
+        _print("note: no reset port recognised; BMC starts from an arbitrary register state")
     return 0 if result.ok else 1
 
 
@@ -386,7 +394,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(last_sva)
-            _print(f"wrote {dest}")
+            verdict = "proven" if traj.ok else f"NOT proven ({traj.status})"
+            _print(f"wrote {dest} [{verdict}]")
     return 0 if failed == 0 else 1
 
 
@@ -513,6 +522,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
     rows: list[GateReport] = []
     failed = 0
+    not_evaluated: list[str] = []
 
     if args.suite == "assertllm2":
         root = Path(args.root) if args.root else assertllm2_default_root()
@@ -536,7 +546,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
             sva = _resolve_sva(args, design.name, None)
             if sva is None or not sva.is_file():
                 _print(f"[{design.key}] missing candidate SVA (pass --sva file or directory)")
-                failed += 1
+                not_evaluated.append(design.name)
                 continue
             shipped = load_assertllm2_mutants(design, max_mutants=args.max_mutants)
             block_dir = workdir / f"gate-{design.name}"
@@ -555,18 +565,10 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 run_cover=not args.no_cover,
                 mutants=shipped,
                 extra_files=_unique_extras(design.extras),
+                strict=not args.trusted,
             )
             write_report(report, block_dir / "gate.json")
-            _print(
-                f"[{design.key}] prove={report.prove.status} cover={_cover_cell(report)} "
-                f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
-                f"({100.0 * report.kill_rate:.0f}%)"
-            )
-            if report.prove.status != "PASS" and report.prove.errors:
-                _print(f"  {report.prove.errors[0][:400]}")
-            for outcome in report.mutants:
-                mark = "KILL" if outcome.killed else outcome.result.status
-                _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
+            _print_gate_report(design.key, report)
             rows.append(report)
             if not report.passed or report.kill_rate < args.min_kill:
                 failed += 1
@@ -593,8 +595,10 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 dut = block / f"{name}.sv"
                 sva_path = _resolve_sva(args, name, block / f"{name}.sva.sv")
                 if sva_path is None or not sva_path.is_file():
+                    # A candidate directory may lack a block; report it and grade the rest.
                     _print(f"[{name}] missing {sva_path}")
-                    return 1
+                    not_evaluated.append(name)
+                    continue
                 pairs.append((name, dut, sva_path, name))
 
         extras = _unique_extras(tuple(Path(p) for p in (args.extra or [])))
@@ -602,7 +606,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
             clock_skip = dual_edge_clock_reason_from_files(dut, *extras)
             if clock_skip:
                 _print(f"[{name}] skip: {clock_skip}")
-                failed += 1
+                not_evaluated.append(name)
                 continue
             block_dir = workdir / f"gate-{name}"
             _print(f"[{name}] prove + cover + COI + mutation ({args.max_mutants} mutants)")
@@ -617,18 +621,10 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 max_mutants=args.max_mutants,
                 run_cover=not args.no_cover,
                 extra_files=extras,
+                strict=not args.trusted,
             )
             write_report(report, block_dir / "gate.json")
-            _print(
-                f"[{name}] prove={report.prove.status} cover={_cover_cell(report)} "
-                f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
-                f"({100.0 * report.kill_rate:.0f}%)"
-            )
-            if report.prove.status != "PASS" and report.prove.errors:
-                _print(f"  {report.prove.errors[0][:400]}")
-            for outcome in report.mutants:
-                mark = "KILL" if outcome.killed else outcome.result.status
-                _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
+            _print_gate_report(name, report)
             rows.append(report)
             if not report.passed or report.kill_rate < args.min_kill:
                 failed += 1
@@ -636,11 +632,57 @@ def cmd_gate(args: argparse.Namespace) -> int:
     if rows:
         _print("")
         _print_gate_table(rows)
-        _print(
-            f"\ngate: {len(rows) - failed}/{len(rows)} PASS "
-            f"(prove+cover, min-kill {args.min_kill:.0%})"
+        summary = f"\ngate: {len(rows) - failed}/{len(rows)} PASS (prove+cover, min-kill {args.min_kill:.0%})"
+        if not_evaluated:
+            summary += f"; {len(not_evaluated)} not evaluated: {', '.join(not_evaluated)}"
+        _print(summary)
+    if args.markdown is not None and rows:
+        md = Path(args.markdown)
+        md.parent.mkdir(parents=True, exist_ok=True)
+        with md.open("a", encoding="utf-8") as fh:
+            fh.write(gate_markdown(rows, min_kill=args.min_kill, failed=failed))
+        _print(f"markdown summary -> {md}")
+    return 0 if failed == 0 and not not_evaluated else 1
+
+
+def _print_gate_report(name: str, report: GateReport) -> None:
+    _print(
+        f"[{name}] prove={report.prove.status} cover={_cover_cell(report)} "
+        f"coi={report.coi.coverage:.2f} kill={report.killed}/{len(report.valid_mutants)} "
+        f"({100.0 * report.kill_rate:.0f}%)"
+    )
+    if report.prove.status != "PASS" and report.prove.errors:
+        _print(f"  {report.prove.errors[0][:400]}")
+    if report.vacuous:
+        _print(f"  vacuous (antecedent unreachable): {', '.join(report.vacuous)}")
+    for item in report.skipped:
+        _print(f"  not proven (skipped by lowerer): {item[:200]}")
+    for outcome in report.mutants:
+        mark = "KILL" if outcome.killed else outcome.result.status
+        _print(f"  {outcome.mutant.name}: {mark}  {outcome.mutant.description}")
+
+
+def gate_markdown(rows: list[GateReport], *, min_kill: float, failed: int) -> str:
+    """GitHub step-summary table for a gate run."""
+    lines = [
+        f"### fsyn gate: {len(rows) - failed}/{len(rows)} PASS (prove+cover, min-kill {min_kill:.0%})",
+        "",
+        "| block | prove | cover | coi | mutants | killed | kill% | notes |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        notes: list[str] = []
+        if r.vacuous:
+            notes.append("vacuous: " + ", ".join(r.vacuous))
+        if r.skipped:
+            notes.append(f"{len(r.skipped)} skipped")
+        if r.prove.lowered is not None and r.prove.lowered.reset is None:
+            notes.append("no reset assumed")
+        lines.append(
+            f"| {r.block} | {r.prove.status} | {_cover_cell(r)} | {r.coi.coverage:.2f} | "
+            f"{len(r.valid_mutants)} | {r.killed} | {100.0 * r.kill_rate:.0f}% | {'; '.join(notes)} |"
         )
-    return 0 if failed == 0 else 1
+    return "\n".join(lines) + "\n\n"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -669,6 +711,18 @@ def build_parser() -> argparse.ArgumentParser:
     verify_p.add_argument("--timeout", type=float, default=300.0)
     verify_p.add_argument("--workdir", type=Path, default=default_workdir())
     verify_p.add_argument("--frontend", choices=("verilog", "slang"), default="verilog")
+    verify_p.add_argument("--extra", action="append", type=Path, default=None, help="extra compile units (repeatable)")
+    verify_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="reject assume property / fsyn:verbatim (what the grader applies to model output)",
+    )
+    verify_p.add_argument(
+        "--no-reset-assume",
+        action="store_true",
+        help="do not hold the DUT reset active at step 0 (default: assume it, like a testbench)",
+    )
+    verify_p.add_argument("--reset-cycles", type=int, default=1, help="cycles the reset is held (default 1)")
 
     golden = sub.add_parser("golden", help="prove every block in benchmarks/golden")
     golden.add_argument("--depth", type=int, default=20)
@@ -715,6 +769,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="fail the gate if mutation kill rate is below this (default 0.0)",
     )
     gate.add_argument("--no-cover", action="store_true", help="skip the cover/vacuity sby run")
+    gate.add_argument(
+        "--trusted",
+        action="store_true",
+        help="allow assume property / fsyn:verbatim in the SVA (hand-written blocks only; "
+        "never for model output)",
+    )
+    gate.add_argument(
+        "--markdown",
+        type=Path,
+        default=None,
+        help="append a markdown summary table here (e.g. $GITHUB_STEP_SUMMARY)",
+    )
 
     trace = sub.add_parser("trace", help="pretty-print a yosys-smtbmc counterexample VCD")
     trace.add_argument("vcd", type=Path)

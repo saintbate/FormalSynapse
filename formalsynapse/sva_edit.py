@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import re
 
+from formalsynapse.sva_lower import blank_comments
+
 _IFDEF = re.compile(r"^\s*`ifdef\s+FORMAL\b", re.I | re.M)
+_SYSTASK = re.compile(r"\$[A-Za-z_]\w*")
 _ENDIF = re.compile(r"^\s*`endif\b", re.I | re.M)
 _PROP = re.compile(r"\bproperty\s+(?P<name>[A-Za-z_]\w*)\b", re.I)
 _ENDPROP = re.compile(r"\bendproperty\b", re.I)
@@ -22,8 +25,11 @@ _PROP_REF = re.compile(
 
 
 def has_assert(sva: str) -> bool:
-    """True when the block has a labeled assert or assume. Covers alone do not count."""
-    for match in _LABELED.finditer(sva):
+    """True when the block has a labeled assert or assume. Covers alone do not count.
+
+    Comments and string literals are ignored, so a commented-out assert is not an assert.
+    """
+    for match in _LABELED.finditer(blank_comments(sva, strings=True)):
         if match.group("kind").lower() in {"assert", "assume"}:
             return True
     return False
@@ -122,8 +128,20 @@ def _statement_end(text: str, from_idx: int) -> int:
     i = _skip_ws(text, i)
     if text.startswith("else", i):
         i = _skip_ws(text, i + 4)
-        if text.startswith("$error", i):
-            i = _skip_ws(text, i + 6)
+        if text.startswith("begin", i):
+            # else begin $error(...); $fatal; end
+            end = _skip_begin_end(text, i)
+            if end < 0:
+                return -1
+            i = _skip_ws(text, end)
+            if i < len(text) and text[i] == ";":
+                i += 1
+            if i < len(text) and text[i] == "\n":
+                i += 1
+            return i
+        task = _SYSTASK.match(text, i)  # $error / $fatal / $warning / $info / $display
+        if task is not None:
+            i = _skip_ws(text, task.end())
             if i < len(text) and text[i] == "(":
                 i = _skip_balanced(text, i)
                 if i < 0:
@@ -134,6 +152,20 @@ def _statement_end(text: str, from_idx: int) -> int:
         if i < len(text) and text[i] == "\n":
             i += 1
         return i
+    return -1
+
+
+def _skip_begin_end(text: str, start: int) -> int:
+    """Index just past the ``end`` matching the ``begin`` at ``start`` (string/comment aware)."""
+    code = blank_comments(text, strings=True)
+    depth = 0
+    for m in re.finditer(r"\b(begin|end)\b", code[start:]):
+        if m.group(1) == "begin":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return start + m.end()
     return -1
 
 

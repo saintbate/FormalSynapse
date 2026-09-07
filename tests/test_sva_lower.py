@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from formalsynapse.sva_lower import LowerError, history_depth, lower, parse_property_body, shift
+from formalsynapse.sva_lower import (
+    LowerError,
+    base_label,
+    blank_comments,
+    history_depth,
+    lower,
+    parse_property_body,
+    shift,
+    strip_comments,
+)
 
 SVA = """\
 property p_demo_inc;
@@ -279,3 +288,127 @@ a_idle: assert property (@(posedge clk) disable iff (!resetn) !busy |-> txd);
 """
     result = lower(text)
     assert "a_idle" in result.names
+
+
+# ---- grader-integrity fixes -----------------------------------------------------------------
+
+
+def _depth(result: object, name: str) -> int:
+    assert hasattr(result, "assertions")
+    return next(a.history_depth for a in result.assertions if a.name == name)
+
+
+def test_guard_depth_is_max_not_sum() -> None:
+    """``req |=> ##[0:10] gnt`` must be checkable within a depth-20 BMC (guard 11, not 21)."""
+    rng = lower("a_r: assert property (@(posedge clk) disable iff (!rst_n) req |=> ##[0:10] gnt);", auto_cover=False)
+    assert _depth(rng, "a_r") == 11
+    assert "f_fsyn_cycles >= 8'd11" in rng.verilog
+    assert "f_fsyn_cycles >= 8'd21" not in rng.verilog
+    fixed = lower(
+        "a_f: assert property (@(posedge clk) disable iff (!rst_n) en |=> count == $past(count) + 1);",
+        auto_cover=False,
+    )
+    assert _depth(fixed, "a_f") == 1
+    ov = lower("a_o: assert property (@(posedge clk) disable iff (!rst_n) req |-> ##[1:3] gnt);", auto_cover=False)
+    assert _depth(ov, "a_o") == 3
+
+
+def test_reset_assumption_emitted_and_checks_start_after_reset() -> None:
+    low = lower("a_x: assert property (@(posedge clk) a |-> b);", reset="rst_n", reset_active_low=True)
+    assert "initial assume(!rst_n);" in low.verilog
+    assert low.reset == "rst_n"
+    assert _depth(low, "a_x") == 1  # pre-reset garbage at step 0 is never checked
+    high = lower("a_x: assert property (@(posedge clk) a |-> b);", reset="rst", reset_active_low=False)
+    assert "initial assume(rst);" in high.verilog
+    multi = lower("a_x: assert property (@(posedge clk) a |-> b);", reset="rst_n", reset_cycles=3)
+    assert "if (f_fsyn_cycles < 8'd3) assume(!rst_n);" in multi.verilog
+    assert _depth(multi, "a_x") == 3
+    none = lower("a_x: assert property (@(posedge clk) a |-> b);")
+    assert "assume(" not in none.verilog
+    assert _depth(none, "a_x") == 0
+
+
+def test_reset_is_disable_fallback_for_bare_properties() -> None:
+    low = lower("a_x: assert property (a |=> b);", reset="rst", reset_active_low=False, auto_cover=False)
+    assert "$past(!(rst), 1)" in low.verilog or "$past(!rst, 1)" in low.verilog
+
+
+def test_strict_rejects_assume_and_verbatim() -> None:
+    with pytest.raises(LowerError, match="assume property is not allowed"):
+        lower("m_env: assume property (@(posedge clk) disable iff (!rst_n) !en);\n" + SVA, strict=True)
+    verbatim = "// fsyn:verbatim\ninitial assume(0);\n// fsyn:endverbatim\n" + SVA
+    with pytest.raises(LowerError, match="verbatim"):
+        lower(verbatim, strict=True)
+    assert lower(verbatim).verbatim_blocks  # trusted mode still accepts it
+
+
+def test_auto_cover_per_assert_antecedent() -> None:
+    result = lower(SVA)
+    assert "a_demo_inc__cov" in result.names
+    cov = next(a for a in result.assertions if a.name == "a_demo_inc__cov")
+    assert cov.kind == "cover"
+    assert "a_demo_inc__cov: cover(" in result.verilog
+    assert "a_demo_inc__cov" not in lower(SVA, auto_cover=False).names
+    # invariants have no antecedent -> no auto cover
+    inv = lower("a_inv: assert property (@(posedge clk) disable iff (!rst_n) count <= 4'hF);")
+    assert inv.names == ("a_inv",)
+
+
+def test_skipped_items_are_reported_not_hidden() -> None:
+    text = SVA + "\na_ev: assert property (@(posedge clk) disable iff (!rst_n) en |=> eventually done);\n"
+    result = lower(text)
+    assert result.proves_something
+    assert len(result.skipped) == 1
+    assert "a_ev" in result.skipped[0]
+    covers_only = lower("c_en: cover property (@(posedge clk) disable iff (!rst_n) en);")
+    assert not covers_only.proves_something
+
+
+def test_base_label_strips_lowering_suffixes() -> None:
+    assert base_label("a_x__c1") == "a_x"
+    assert base_label("a_x__cov") == "a_x"
+    assert base_label("counter.a_x__c2") == "a_x"
+    assert base_label("a_x") == "a_x"
+
+
+def test_default_disable_iff_applies_to_clocked_properties() -> None:
+    text = """
+default disable iff (!rst_n);
+a_x: assert property (@(posedge clk) a |=> b);
+"""
+    result = lower(text, auto_cover=False)
+    assert "$past(rst_n, 1)" in result.verilog
+
+
+def test_default_clocking_sets_clock() -> None:
+    text = """
+default clocking cb @(posedge sys_clk); endclocking
+a_x: assert property (a |=> b);
+"""
+    result = lower(text, auto_cover=False)
+    assert result.clock == "sys_clk"
+
+
+def test_semicolon_inside_error_string() -> None:
+    text = SVA.replace('$error("inc")', '$error("inc; count=%0d", count)')
+    result = lower(text)
+    assert "a_demo_inc" in result.names
+    assert "c_demo_en" in result.names
+
+
+def test_bare_identifier_is_an_invariant() -> None:
+    result = lower("a_busy: assert property (@(posedge clk) disable iff (!rst_n) idle);", auto_cover=False)
+    assert "a_busy: assert((idle))" in result.verilog.replace("  ", " ")
+
+
+def test_sequence_keyword_inside_string_is_fine() -> None:
+    text = SVA.replace('$error("inc")', '$error("sequence broke")')
+    assert "a_demo_inc" in lower(text).names
+
+
+def test_strip_comments_respects_strings() -> None:
+    assert strip_comments('x = "a // b"; // c') == 'x = "a // b"; '
+    assert strip_comments("a /* b */ c") == "a   c"
+    blank = blank_comments('q = "abc"; // zz', strings=True)
+    assert len(blank) == len('q = "abc"; // zz')
+    assert blank.startswith('q = "   ";')

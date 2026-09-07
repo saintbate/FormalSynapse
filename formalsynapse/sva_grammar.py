@@ -99,16 +99,22 @@ class ExtractError(ValueError):
 
 _PROP_BEGIN = re.compile(r"^\s*property\s+[A-Za-z_]\w*", re.I)
 _PROP_END = re.compile(r"\bendproperty\b", re.I)
-_STMT_BEGIN = re.compile(r"\b(?:assert|assume|cover)\s+property\b", re.I)
+# A statement line must *start* with the statement (optionally labelled). "We can write: cover
+# property (...)" is prose, not a cover named `write`.
+_STMT_LINE = re.compile(r"^\s*(?:`?[A-Za-z_]\w*\s*:\s*)?(?:assert|assume|cover)\s+property\b", re.I)
+_DIRECTIVE_LINE = re.compile(r"^\s*`(?:ifdef|ifndef|elsif|else|endif|define|undef)\b", re.I)
+_DEFAULT_LINE = re.compile(r"^\s*default\s+(?:clocking|disable)\b", re.I)
+_LEADING_FENCE = re.compile(r"^\s*```[A-Za-z]*[ \t]*\n")
+_TRAILING_FENCE = re.compile(r"\n[ \t]*```[ \t]*$")
 
 
 def _keep_sva_line(line: str, *, in_prop: bool, in_stmt: bool) -> bool:
     stripped = line.strip()
-    if not stripped or stripped.startswith("//") or stripped.startswith("`"):
+    if not stripped or stripped.startswith("//") or _DIRECTIVE_LINE.match(stripped):
         return True
     if in_prop or in_stmt:
         return True
-    return bool(_PROPERTY.search(stripped) or _LABELED.search(stripped) or _STMT_BEGIN.search(stripped))
+    return bool(_PROP_BEGIN.match(stripped) or _STMT_LINE.match(stripped) or _DEFAULT_LINE.match(stripped))
 
 
 def compact_sva(block: str) -> str | None:
@@ -120,9 +126,9 @@ def compact_sva(block: str) -> str | None:
     in_stmt = False
     for line in block.splitlines():
         stripped = line.strip()
-        if _PROP_BEGIN.search(stripped) and not _PROP_END.search(stripped):
+        if _PROP_BEGIN.match(stripped) and not _PROP_END.search(stripped):
             in_prop = True
-        if _LABELED.search(stripped) or _STMT_BEGIN.search(stripped):
+        if _STMT_LINE.match(stripped):
             in_stmt = True
         if _keep_sva_line(line, in_prop=in_prop, in_stmt=in_stmt):
             out.append(line.rstrip())
@@ -159,6 +165,9 @@ def extract_sva(text: str) -> str:
     stripped = _strip_reasoning(text).strip()
     fences = _FENCE.findall(stripped)
     candidates = list(fences) if fences else []
+    # An unmatched fence (max_tokens hit before the closing ```) would otherwise survive as
+    # a stray `systemverilog macro.
+    stripped = _TRAILING_FENCE.sub("", _LEADING_FENCE.sub("", stripped))
     candidates.append(stripped)
     for cand in candidates:
         block = str(cand).strip()

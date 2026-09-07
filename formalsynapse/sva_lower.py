@@ -177,10 +177,22 @@ class LoweredSVA:
     clock: str
     max_history: int
     verbatim_blocks: tuple[str, ...] = field(default_factory=tuple)
+    skipped: tuple[str, ...] = field(default_factory=tuple)
+    reset: str | None = None
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(a.name for a in self.assertions)
+
+    @property
+    def checks(self) -> tuple[LoweredAssertion, ...]:
+        """Assertions that constitute a proof obligation (asserts and assumes, not covers)."""
+        return tuple(a for a in self.assertions if a.kind in ("assert", "assume"))
+
+    @property
+    def proves_something(self) -> bool:
+        """True when a PASS means at least one assert was actually checked."""
+        return any(a.kind == "assert" for a in self.assertions)
 
 
 # --------------------------------------------------------------------------------------------
@@ -188,10 +200,77 @@ class LoweredSVA:
 # --------------------------------------------------------------------------------------------
 
 
+def _scan_code(text: str, *, keep_strings: bool, preserve_offsets: bool) -> str:
+    """Walk ``text`` once, dropping ``//`` and ``/* */`` comments while respecting string literals.
+
+    With ``preserve_offsets`` every removed character becomes a space (newlines are kept) so
+    regex match positions stay valid on the original text. With ``keep_strings=False`` the
+    contents of string literals are blanked too (the quotes stay).
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+
+    def drop(ch: str) -> None:
+        if preserve_offsets:
+            out.append("\n" if ch == "\n" else " ")
+
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            out.append(ch)
+            i += 1
+            while i < n and text[i] != '"':
+                c = text[i]
+                if c == "\\" and i + 1 < n:
+                    if keep_strings:
+                        out.append(text[i : i + 2])
+                    else:
+                        out.append("  ")
+                    i += 2
+                    continue
+                if c == "\n":  # unterminated string literal: stop at end of line
+                    break
+                out.append(c if keep_strings else " ")
+                i += 1
+            if i < n and text[i] == '"':
+                out.append('"')
+                i += 1
+            continue
+        if text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                drop(text[i])
+                i += 1
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end == -1 else end + 2
+            if preserve_offsets:
+                for c in text[i:end]:
+                    drop(c)
+            else:
+                out.append(" ")
+            i = end
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def strip_comments(text: str) -> str:
-    """Remove ``//`` and ``/* */`` comments (string literals are not special-cased)."""
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
+    """Remove ``//`` and ``/* */`` comments; ``//`` inside a string literal is not a comment."""
+    return _scan_code(text, keep_strings=True, preserve_offsets=False)
+
+
+def blank_comments(text: str, *, strings: bool = False) -> str:
+    """Replace comments (and optionally string contents) with spaces, preserving offsets."""
+    return _scan_code(text, keep_strings=not strings, preserve_offsets=True)
+
+
+def find_top_level(text: str, needle: str, start: int = 0) -> int:
+    """Index of ``needle`` at or after ``start`` that is not inside a string literal, else -1."""
+    blanked = blank_comments(text, strings=True)
+    return blanked.find(needle, start)
 
 
 def _split_top_level(text: str, seps: tuple[str, ...]) -> list[tuple[str | None, str]]:
@@ -483,19 +562,25 @@ _CLOCKING = re.compile(r"^\s*@\s*\(\s*posedge\s+([A-Za-z_]\w*)\s*\)\s*", re.S)
 _DISABLE = re.compile(r"^\s*disable\s+iff\s*\(", re.S)
 
 
-def parse_property_body(body: str) -> Property:
+def parse_property_body(
+    body: str,
+    *,
+    default_clock: str = "clk",
+    default_disable: str | None = None,
+    fallback_disable: str | None = "!rst_n",
+) -> Property:
     """Parse ``@(posedge clk) [disable iff (D)] <prop>``.
 
-    Clocking is optional: models often write a bare implication. The FormalSynapse
-    subset is single-clock ``clk`` with ``disable iff (!rst_n)``.
+    Clocking is optional: models often write a bare implication. ``default_clock`` fills a
+    missing clock. ``default_disable`` (from a ``default disable iff`` directive) applies to
+    every property without its own ``disable iff``. A property with neither clocking nor
+    disable gets ``fallback_disable`` (the DUT reset, or ``!rst_n``).
     """
     body = body.strip().rstrip(";").strip()
     m = _CLOCKING.match(body)
+    implicit_clock = m is None
     if m is None:
-        if _DISABLE.match(body) is not None:
-            body = f"@(posedge clk) {body}"
-        else:
-            body = f"@(posedge clk) disable iff (!rst_n) {body}"
+        body = f"@(posedge {default_clock}) {body}"
         m = _CLOCKING.match(body)
         if m is None:  # pragma: no cover - prefix is constant
             raise LowerError(f"property must start with '@(posedge <clk>)': {body!r}")
@@ -509,6 +594,10 @@ def parse_property_body(body: str) -> Property:
             raise LowerError("disable iff takes a single expression")
         disable = args[0]
         rest = rest[end:]
+    elif default_disable is not None:
+        disable = default_disable
+    elif implicit_clock:
+        disable = fallback_disable
     rest = rest.strip()
     if not rest:
         raise LowerError("property has no body")
@@ -566,9 +655,37 @@ _IFDEF = re.compile(
     re.S | re.I,
 )
 _DEFAULT_DIR = re.compile(
-    r"\bdefault\s+(?:disable\s+iff\s*\([^;]*\)|clocking\b[^;]*)\s*;",
+    r"\bdefault\s+(?:disable\s+iff\s*\([^;]*\)|clocking\b[^;]*)\s*;(?:\s*endclocking\b)?",
     re.S | re.I,
 )
+_DEFAULT_DISABLE = re.compile(r"\bdefault\s+disable\s+iff\s*\(", re.I)
+_DEFAULT_CLOCKING = re.compile(
+    r"\bdefault\s+clocking\b[^;@]*@\s*\(\s*posedge\s+([A-Za-z_]\w*)\s*\)",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class Defaults:
+    """``default clocking`` / ``default disable iff`` directives found in a block."""
+
+    clock: str | None = None
+    disable: str | None = None
+
+
+def _parse_defaults(text: str) -> Defaults:
+    clock: str | None = None
+    disable: str | None = None
+    cm = _DEFAULT_CLOCKING.search(text)
+    if cm is not None:
+        clock = cm.group(1)
+    dm = _DEFAULT_DISABLE.search(text)
+    if dm is not None:
+        args, _ = _balanced_call_args(text, dm.end() - 1)
+        if len(args) != 1 or not args[0].strip():
+            raise LowerError("default disable iff takes a single expression")
+        disable = args[0].strip()
+    return Defaults(clock, disable)
 _SIMPLE_DECL = re.compile(
     r"^\s*(?:(?:const\s+)?(?:logic|bit|reg|wire|integer|localparam|parameter)\b[^;]*;)",
     re.M,
@@ -598,9 +715,11 @@ def _extract_simple_decls(text: str) -> tuple[str, list[str]]:
     return _SIMPLE_DECL.sub("\n", text), decls
 
 
-def _parse_block(text: str) -> tuple[dict[str, str], list[Statement]]:
-    if _SEQUENCE_DECL.search(text):
+def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults]:
+    code = blank_comments(text, strings=True)  # same offsets as ``text``; strings blanked
+    if _SEQUENCE_DECL.search(code):
         raise LowerError("'sequence' declarations are not supported; inline the sequence")
+    defaults = _parse_defaults(code)
     properties: dict[str, str] = {}
     for m in _PROPERTY_DECL.finditer(text):
         name, body = m.group(1), m.group(2)
@@ -608,24 +727,25 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement]]:
             raise LowerError(f"duplicate property '{name}'")
         properties[name] = body
     remaining = _PROPERTY_DECL.sub("\n", text)
+    remaining_code = blank_comments(remaining, strings=True)
 
     statements: list[Statement] = []
     pos = 0
     auto = 0
     while True:
-        stmt_m = _STATEMENT.search(remaining, pos)
+        stmt_m = _STATEMENT.search(remaining_code, pos)
         if stmt_m is None:
             break
         label, kind = stmt_m.group(1), stmt_m.group(2)
         try:
-            args, end = _balanced_call_args(remaining, stmt_m.end() - 1)
+            args, end = _balanced_call_args(remaining_code, stmt_m.end() - 1)
         except LowerError:
             break
         if len(args) != 1:
             raise LowerError(f"{kind} property takes one argument")
-        arg = args[0].strip()
-        # consume optional action block up to ';'
-        semi = remaining.find(";", end)
+        arg = remaining[stmt_m.end() : end - 1].strip()
+        # consume optional action block up to ';' (a ';' inside "$error(...)" text does not count)
+        semi = remaining_code.find(";", end)
         if semi == -1:
             # Truncated last statement (hit max_tokens mid-$error). Keep prior ones.
             break
@@ -636,11 +756,10 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement]]:
         if kind not in ("assert", "assume", "cover"):  # pragma: no cover - regex restricts this
             raise LowerError(kind)
         kind_t: Kind = kind  # type: ignore[assignment]
-        if re.fullmatch(r"[A-Za-z_]\w*", arg):
-            if arg not in properties:
-                raise LowerError(f"{kind} property references undefined property '{arg}'")
+        if re.fullmatch(r"[A-Za-z_]\w*", arg) and arg in properties:
             stmt = Statement(kind_t, label or "", arg, None, source)
         else:
+            # A bare identifier that is not a declared property is a boolean invariant.
             stmt = Statement(kind_t, label or "", None, arg, source)
         if not stmt.label:
             auto += 1
@@ -660,7 +779,7 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement]]:
             "unsupported text outside property/assert/assume/cover statements: "
             f"{leftover_txt[:120]!r}"
         )
-    return properties, statements
+    return properties, statements, defaults
 
 
 def _strip_statements(text: str, statements: list[Statement]) -> str:
@@ -716,45 +835,76 @@ def _emit_check(
     out.append("  end")
 
 
-def _lower_statement(stmt: Statement, prop: Property, out: list[str]) -> list[LoweredAssertion]:
+AUTO_COVER_SUFFIX = "__cov"
+_LABEL_SUFFIX = re.compile(r"(?:__c\d+|__cov)$")
+
+
+def base_label(label: str) -> str:
+    """Map a lowered label (``a_x__c1``, ``a_x__cov``) back to its source label (``a_x``)."""
+    return _LABEL_SUFFIX.sub("", label.split(".")[-1])
+
+
+def _guard_depth(*reads: int) -> int:
+    """Cycles that must elapse before every ``$past`` read in a check is inside the trace.
+
+    Each argument is the deepest read of one term of the check (condition, body, reset gate).
+    The check is safe once the *deepest* term is safe, so this is a ``max``, not a sum: a sum
+    would leave ``req |=> ##[0:10] gnt`` unchecked until cycle 21 at BMC depth 20.
+    """
+    return max(reads, default=0)
+
+
+def _lower_statement(
+    stmt: Statement,
+    prop: Property,
+    out: list[str],
+    *,
+    min_depth: int = 0,
+    auto_cover: bool = False,
+) -> list[LoweredAssertion]:
     produced: list[LoweredAssertion] = []
     ante = prop.antecedent
+
+    def emit(label: str, kind: Kind, *, window: int, condition: str | None, body: str, depth: int) -> None:
+        depth = max(depth, min_depth)
+        _emit_check(
+            out,
+            label=label,
+            kind=kind,
+            clock=prop.clock,
+            guard_terms=_reset_gate(prop.disable, window),
+            condition=condition,
+            body=body,
+            depth=depth,
+        )
+        produced.append(LoweredAssertion(label, kind, stmt.property_name, stmt.source, depth))
 
     if prop.operator is None:
         # Plain sequence: for assert/assume this is an invariant over the sequence end; for cover
         # it is "the sequence completed".
         window = ante.span
-        depth = window + ante.history()
-        body = ante.at_end_shifted(0)
-        _emit_check(
-            out,
-            label=stmt.label,
-            kind=stmt.kind,
-            clock=prop.clock,
-            guard_terms=_reset_gate(prop.disable, window),
+        emit(
+            stmt.label,
+            stmt.kind,
+            window=window,
             condition=None,
-            body=body,
-            depth=depth,
+            body=ante.at_end_shifted(0),
+            depth=_guard_depth(window + ante.history()),
         )
-        produced.append(LoweredAssertion(stmt.label, stmt.kind, stmt.property_name, stmt.source, depth))
         return produced
 
     if stmt.kind == "cover":
         # Named `cover property (p_foo)` where p_foo is an implication: cover the antecedent
         # (non-vacuity). Same as writing `cover property (@(posedge clk) ante)`.
         window = ante.span
-        depth = window + ante.history()
-        _emit_check(
-            out,
-            label=stmt.label,
-            kind="cover",
-            clock=prop.clock,
-            guard_terms=_reset_gate(prop.disable, window),
+        emit(
+            stmt.label,
+            "cover",
+            window=window,
             condition=None,
             body=ante.at_end_shifted(0),
-            depth=depth,
+            depth=_guard_depth(window + ante.history()),
         )
-        produced.append(LoweredAssertion(stmt.label, stmt.kind, stmt.property_name, stmt.source, depth))
         return produced
 
     cons = prop.consequent
@@ -768,44 +918,91 @@ def _lower_statement(stmt: Statement, prop: Property, out: list[str]) -> list[Lo
         window = s_hi + ante.span
         c = cons.exprs[0]
         alts = [shift(c, j) for j in range(0, rng.hi - rng.lo + 1)]
-        depth = window + max(ante.history(), (rng.hi - rng.lo) + history_depth(c))
-        _emit_check(
-            out,
-            label=stmt.label,
-            kind=stmt.kind,
-            clock=prop.clock,
-            guard_terms=_reset_gate(prop.disable, window),
+        emit(
+            stmt.label,
+            stmt.kind,
+            window=window,
             condition=ante.at_end_shifted(s_hi),
             body=" || ".join(alts),
-            depth=depth,
+            depth=_guard_depth(window + ante.history(), (rng.hi - rng.lo) + history_depth(c)),
         )
-        produced.append(LoweredAssertion(stmt.label, stmt.kind, stmt.property_name, stmt.source, depth))
-        return produced
+    else:
+        for j, (c, off) in enumerate(zip(cons.exprs, cons.offsets, strict=True)):
+            s = base + off
+            window = s + ante.span
+            label = stmt.label if j == 0 else f"{stmt.label}__c{j}"
+            emit(
+                label,
+                stmt.kind,
+                window=window,
+                condition=ante.at_end_shifted(s),
+                body=f"({c.strip()})",
+                depth=_guard_depth(window + ante.history(), history_depth(c)),
+            )
 
-    for j, (c, off) in enumerate(zip(cons.exprs, cons.offsets, strict=True)):
-        s = base + off
-        window = s + ante.span
-        depth = window + max(ante.history(), history_depth(c))
-        label = stmt.label if j == 0 else f"{stmt.label}__c{j}"
-        _emit_check(
-            out,
-            label=label,
-            kind=stmt.kind,
-            clock=prop.clock,
-            guard_terms=_reset_gate(prop.disable, window),
-            condition=ante.at_end_shifted(s),
-            body=f"({c.strip()})",
-            depth=depth,
+    if auto_cover and stmt.kind == "assert":
+        # Non-vacuity witness: the antecedent must be reachable under the same reset gating.
+        # Checked in cover mode only (sby drops covers in bmc/prove), so bmc cost is unchanged.
+        window = ante.span
+        emit(
+            f"{stmt.label}{AUTO_COVER_SUFFIX}",
+            "cover",
+            window=window,
+            condition=None,
+            body=ante.at_end_shifted(0),
+            depth=_guard_depth(window + ante.history()),
         )
-        produced.append(LoweredAssertion(label, stmt.kind, stmt.property_name, stmt.source, depth))
     return produced
 
 
-def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> LoweredSVA:
+def _reset_active(reset: str, active_low: bool) -> str:
+    return f"!{reset}" if active_low else reset
+
+
+def _reset_assumption(reset: str, active_low: bool, cycles: int, clock: str) -> list[str]:
+    """Constrain the DUT to start in reset: ``initial assume(!rst_n)`` (+ ``cycles-1`` more)."""
+    active = _reset_active(reset, active_low)
+    lines = [
+        f"  // reset assumption: {reset} held active for {cycles} cycle(s) from step 0",
+        f"  initial assume({active});",
+    ]
+    if cycles > 1:
+        lines += [
+            f"  always @(posedge {clock}) begin",
+            f"    if ({_COUNTER} < {_COUNTER_WIDTH}'d{cycles}) assume({active});",
+            "  end",
+        ]
+    return lines
+
+
+def lower(
+    sva_text: str,
+    *,
+    defines: Mapping[str, str] | None = None,
+    reset: str | None = None,
+    reset_active_low: bool = True,
+    reset_cycles: int = 1,
+    strict: bool = False,
+    auto_cover: bool = True,
+    fallback_disable: str | None = "!rst_n",
+) -> LoweredSVA:
     """Lower an SVA block to Yosys-compatible immediate assertions.
 
-    ``defines`` expands `` `CNT_LENGTH'd1 `` to ``4'd1`` so mutant copies
-    do not need the include file. Leftover macros raise :class:`LowerError`.
+    ``defines`` expands `` `CNT_LENGTH'd1 `` to ``4'd1`` so mutant copies do not need the
+    include file. Leftover macros raise :class:`LowerError`.
+
+    ``reset`` (with ``reset_active_low``) emits an ``initial assume`` holding the DUT in reset
+    for ``reset_cycles`` cycles, and pushes every check to cycle >= ``reset_cycles`` so
+    pre-reset register garbage cannot produce a spurious counterexample. It is also the
+    ``disable iff`` fallback for properties that name neither a clock nor a disable.
+
+    ``strict`` rejects ``assume property`` and ``fsyn:verbatim`` blocks: a generated candidate
+    must not be able to constrain the environment or add modelling code, otherwise a PASS is
+    meaningless. ``auto_cover`` adds a ``<label>__cov`` cover of every assert's antecedent.
+
+    ``fallback_disable`` gates properties that name neither a clock nor a disable; ``reset``
+    overrides it, and the harness passes ``None`` for a DUT that has no reset port at all
+    (so nothing invents an ``rst_n`` the design does not have).
     """
     text = _unwrap_ifdef(sva_text)
     if defines:
@@ -819,24 +1016,46 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
             "instead of `CNT_LENGTH'd1"
         )
     text, verbatim = _extract_verbatim(text)
+    if strict and verbatim:
+        raise LowerError("fsyn:verbatim blocks are not allowed in generated candidates")
     text = strip_comments(text)
     text, decls = _extract_simple_decls(text)
     verbatim.extend(decls)
-    properties, statements = _parse_block(text)
+    properties, statements, defaults = _parse_block(text)
     if not statements and not verbatim:
         raise LowerError("no assert/assume/cover property statements found")
+    if strict:
+        assumes = [s.label for s in statements if s.kind == "assume"]
+        if assumes:
+            raise LowerError(
+                "assume property is not allowed in generated candidates "
+                f"(it constrains the environment): {', '.join(assumes)}"
+            )
+
+    if reset:
+        fallback_disable = _reset_active(reset, reset_active_low)
+    default_clock = defaults.clock or "clk"
+
+    def parse(body: str) -> Property:
+        return parse_property_body(
+            body,
+            default_clock=default_clock,
+            default_disable=defaults.disable,
+            fallback_disable=fallback_disable,
+        )
 
     parsed: dict[str, Property] = {}
     clocks: set[str] = set()
     skipped: list[str] = []
     for name, body in properties.items():
         try:
-            parsed[name] = parse_property_body(body)
+            parsed[name] = parse(body)
         except LowerError as exc:
             skipped.append(f"property '{name}': {exc}")
             continue
         clocks.add(parsed[name].clock)
 
+    min_depth = reset_cycles if reset else 0
     checks: list[str] = []
     produced: list[LoweredAssertion] = []
     seen: set[str] = set()
@@ -849,13 +1068,15 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
                 prop = parsed[stmt.property_name]
             else:
                 assert stmt.inline_body is not None
-                prop = parse_property_body(stmt.inline_body)
+                prop = parse(stmt.inline_body)
                 clocks.add(prop.clock)
             if stmt.label in seen:
                 raise LowerError(f"duplicate label '{stmt.label}'")
             seen.add(stmt.label)
             checks.append(f"  // {stmt.source.splitlines()[0]}")
-            produced.extend(_lower_statement(stmt, prop, checks))
+            produced.extend(
+                _lower_statement(stmt, prop, checks, min_depth=min_depth, auto_cover=auto_cover)
+            )
         except LowerError as exc:
             skipped.append(f"{stmt.kind} '{stmt.label}': {exc}")
             continue
@@ -868,7 +1089,7 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
 
     if len(clocks) > 1:
         raise LowerError(f"all properties must share one clock; found {sorted(clocks)}")
-    clock = next(iter(clocks)) if clocks else "clk"
+    clock = next(iter(clocks)) if clocks else default_clock
     max_hist = max((a.history_depth for a in produced), default=0)
     if max_hist > _COUNTER_MAX - 1:
         raise LowerError(f"history depth {max_hist} exceeds lowering limit {_COUNTER_MAX - 1}")
@@ -881,6 +1102,8 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
         f"    if ({_COUNTER} != {_COUNTER_WIDTH}'d{_COUNTER_MAX}) {_COUNTER} <= {_COUNTER} + 1'b1;",
         "  end",
     ]
+    if reset:
+        out.extend(_reset_assumption(reset, reset_active_low, reset_cycles, clock))
     for vb in verbatim:
         out.append("  // fsyn:verbatim")
         out.append(vb)
@@ -892,4 +1115,6 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
         clock=clock,
         max_history=max_hist,
         verbatim_blocks=tuple(verbatim),
+        skipped=tuple(skipped),
+        reset=reset,
     )
