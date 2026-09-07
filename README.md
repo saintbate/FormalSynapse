@@ -77,7 +77,12 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
 - **Every assert is checked within the bound.** `##[m:n]` and `$past` history only push a check to the
   deepest read it needs (`max`, not `sum`), so `req |=> ##[0:10] gnt` is live from cycle 11 at depth 20.
 - **Nothing skipped counts.** If the lowerer cannot translate a statement it is listed under
-  "Not proven" in the report; a block whose asserts were all skipped is an ERROR, not a PASS.
+  "Not proven" in the report; a block whose asserts were all skipped is an ERROR, not a PASS. A block
+  cut off mid-property (token cap) reports the tail as skipped rather than dropping it silently. In
+  CEGAR a PASS with skipped statements is not a finished turn: the skipped text is stripped, the
+  reason is fed back, and only a *complete* proof (nothing skipped) ends the loop or is logged for
+  distillation. Conjunctions of implications `(a |-> b) && (c |=> d)` lower to one check per
+  conjunct instead of being skipped.
 - **Candidates cannot constrain the environment.** Strict lowering (the default for CEGAR and `fsyn
   gate`) rejects `assume property` and `fsyn:verbatim`. `fsyn gate --trusted` re-enables them for
   hand-written blocks.
@@ -140,9 +145,32 @@ fsyn generate benchmarks/golden/counter --max-feedback 3 --out /tmp/counter.sva.
 # fsyn generate --suite assertllm2 --only versatile_counter --out cand.sva.sv
 ```
 
-Healed `(Prompt, Faulty_Attempt, Counterexample, Fixed_Attempt)` rows are appended to
-`trajectories.jsonl` under `output/` (or `~/.cache/formalsynapse/output` when the repo path
-contains `:`). That file is the Phase 4 RLVR seed.
+Healed `(Prompt, Faulty_Attempt, Counterexample, Fixed_Attempt)` rows (`type: heal`), one
+`type: sft` row per DUT whose winner is a complete proof, and a `type: trajectory` summary are
+appended to the `--dataset` JSONL (default `trajectories.jsonl` under `output/`, or
+`~/.cache/formalsynapse/output` when the repo path contains `:`). That file is the Phase 4
+RLVR seed and the distillation input.
+
+CodeV-SVA-14B is Qwen3-based; the client sends `enable_thinking=false` by default because with
+thinking on it spends the whole budget inside `<think>` (`FSYN_LLM_THINKING=1` restores it).
+Prompts are fitted to the model context (`FSYN_LLM_CONTEXT`, default 8192): previous assistant
+turns are compacted, then history dropped, then the RTL/spec budgets shrunk; the repair message
+is never cut. Each block starts with a DUT smoke run (one trivial assert) so a design that does
+not elaborate costs no GPU time.
+
+```bash
+# Distillation (RWOPD-style): verifier-filtered, kill-weighted SFT of a student
+python scripts/distill/build_sft.py output/golden.jsonl output/assertllm2.jsonl \
+    --min-kill 0.5 --out work/distill/train.jsonl        # stdlib + this repo's lowerer
+pip install -r scripts/distill/requirements.txt          # GPU box
+python scripts/distill/train_lora.py --data work/distill/train.jsonl \
+    --model Qwen/Qwen2.5-Coder-7B-Instruct --out work/distill/adapter
+```
+
+`build_sft.py` keeps only rows whose block was proven with nothing skipped and cover passing,
+drops rows under `--min-kill`, weights the rest by kill rate, and strips the teacher's
+reasoning-in-comments from the assistant turn (re-lowered; must produce the same checks). Nothing
+in the pipeline judges SVA: the only supervision is text `sby` proved and mutation scored.
 
 This Mac does not run vLLM; keep the formal tools local and point `FSYN_LLM_BASE_URL` at a
 remote GPU. Any OpenAI-compatible host works, including OpenRouter, but the spec default is

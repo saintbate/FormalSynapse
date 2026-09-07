@@ -387,11 +387,71 @@ Sampling for best-of-N is now concurrent (`FSYN_LLM_PARALLEL`, default 8) so
 vLLM batches the N candidates; sequential 1k-token requests made a golden
 regeneration a multi-hour job.
 
+### Regeneration with CodeV-SVA-14B (the first live run of the audited grader)
+
+`fsyn generate --suite golden` and `--suite assertllm2` were run against
+`wyt2000/CodeV-SVA-14B` on one A40 (vLLM, bf16, 8k context; ~150 tok/s
+aggregate, so a best-of-8 turn is about two minutes). Settings: `--candidates 8
+--max-feedback 3 --min-kill 0.5 --depth 20`, thinking off. The run was restarted
+three times because each pass surfaced a loop or grader defect; all of these are
+fixed and covered by unit tests:
+
+- **Thinking.** CodeV-SVA-14B is Qwen3-based. With thinking on it spends >4k
+  tokens inside `<think>` and never closes a block within the budget (`counter`:
+  4 turns, 234 s, nothing proven). `enable_thinking=false` via
+  `chat_template_kwargs` gives a ~500-token answer (`counter`: 1 turn, 41 s,
+  8/8). Off by default; `FSYN_LLM_THINKING=1` restores it.
+- **Skipped statements were invisible.** A PASS whose block had 2 "skipped (not
+  proven)" statements ended the turn as a win, and since no repair mentioned
+  them the model added more (`onehot_fsm`: 2 -> 8 -> 14). A winner must now be
+  *complete* (proven, nothing skipped); skipped labels are stripped from the
+  kept block and every repair lists why they were not checked. Best-of-N and
+  the winner prefer fewer skips at equal proof/kill.
+- **Conjunctions of implications.** `(grant[3] |-> $past(req[3])) && (grant[2]
+  |-> ...)` and `A |=> B and C |=> D` were the #1 skip reason (per-bit and
+  per-transition requirements). They lower to one check per conjunct
+  (`<label>__kN`, `base_label` maps back). One such property in the
+  `priority_arbiter` run (`req[3] |-> grant[2:0] == 0` on a registered grant)
+  is false on the DUT: under the old lowerer it rode along in a PASS as
+  "skipped"; now it FAILs and gets repaired.
+- **Truncation.** A block cut off mid-property at the token cap lowered
+  silently to its complete items. The tail is now a skipped item
+  (`truncated (no endproperty)`), stripped by `strip_truncated`, and excluded
+  from distillation rows.
+- **`strip_labels` and comments.** `// Property for Requirement 1` matched the
+  property-declaration regex as a property named `for` whose range ran to the
+  next `endproperty`, so the *real* property beneath it was cut as an orphan
+  and its assert was left referencing a free wire (ERROR on `edge_detector`
+  turn 2). All `sva_edit` scans run on comment-blanked text, and the regex only
+  matches the declaration form.
+- **Duplicate re-emission.** Told "do not copy these back", the model still
+  re-emits kept properties; the turn failed on `duplicate property`. The proven
+  kept copy wins and the re-emitted one is dropped (`drop_duplicates`).
+- **Context overflow.** Turn-4 repair prompts on large AssertLLM2 designs hit
+  HTTP 400 (7681 prompt tokens + completion > 8192). `_fit_context` shrinks in
+  order: assistant turns compacted (comments stripped, clipped), history pair
+  dropped, RTL/spec/design-context budgets scaled down; the repair message is
+  never cut. Ratio 2.5 chars/token measured on the rejected prompt;
+  `FSYN_LLM_CONTEXT` overrides 8192.
+- **DUT smoke.** `fpga-based_median_filter` (`$readmemh ""`) and
+  `orsoc_graphics_accelerator` (multiple drivers) do not elaborate under sby.
+  One trivial-assert run at depth 3 precedes any LLM call; a failing DUT is a
+  turn-0 `DUT smoke failed` ERROR with zero GPU spent.
+
+Results of the final pass are in `regen-20260907b/` (see the table below;
+filled in when the run finished).
+
 ### Weeks 7–9
 
-Re-run the golden CEGAR / AssertLLM2 generate rows with the fixed grader before
-any distillation. RWOPD-style distillation with kill-weighted filtering on one
-H200. Release the adapter and the dataset.
+RWOPD-style distillation with kill-weighted filtering. The pipeline exists
+(`scripts/distill/`): `fsyn generate --dataset` appends one `type: sft` row per
+DUT whose winner is a real proof (system + user prompt as the model saw them,
+the proven block, asserts/skipped/cover/kill evidence); `build_sft.py` filters
+(skipped, cover-fail, below `--min-kill`), weights by kill rate, and
+canonicalises the assistant turn (the teacher's reasoning-in-comments removed,
+re-lowered to the same check names or kept raw); `train_lora.py` does LoRA SFT
+with weighted sampling and completion-only loss on a GPU box. Release the
+adapter and the dataset.
 
 ## 7. Long term
 
