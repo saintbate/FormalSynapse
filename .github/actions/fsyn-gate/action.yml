@@ -1,0 +1,67 @@
+name: fsyn-gate
+description: Prove an SVA against a DUT with sby and score mutation kill
+inputs:
+  source:
+    description: Path to a FormalSynapse checkout
+    default: "."
+  dut:
+    description: DUT Verilog/SystemVerilog file
+    required: true
+  sva:
+    description: Candidate SVA file
+    required: true
+  top:
+    description: Top module name
+    required: true
+  extra:
+    description: Extra compile unit (optional)
+    default: ""
+  min-kill:
+    description: Minimum mutation-kill rate (0–1)
+    default: "0"
+  depth:
+    description: BMC depth
+    default: "20"
+  timeout:
+    description: sby timeout in seconds
+    default: "180"
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v6
+      with:
+        python-version: "3.11"
+    - uses: actions/cache@v4
+      id: cache-suite
+      with:
+        path: ~/.local/opt/oss-cad-suite
+        key: oss-cad-suite-2026-08-31-${{ runner.os }}
+    - name: Install OSS CAD Suite
+      if: steps.cache-suite.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PLATFORM: linux-x64
+        RELEASE: "2026-08-31"
+      run: |
+        export FSYN_TOOLCHAIN_DIR="$HOME/.local/opt/oss-cad-suite"
+        bash "${{ inputs.source }}/scripts/install_toolchain.sh"
+    - name: Install fsyn
+      shell: bash
+      run: uv sync --project "${{ inputs.source }}"
+    - name: Gate
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.local/opt/oss-cad-suite/bin:$PATH"
+        extra=()
+        if [[ -n "${{ inputs.extra }}" ]]; then
+          extra+=(--extra "${{ inputs.extra }}")
+        fi
+        uv run --project "${{ inputs.source }}" fsyn gate \
+          --dut "${{ inputs.dut }}" \
+          --sva "${{ inputs.sva }}" \
+          --top "${{ inputs.top }}" \
+          --depth "${{ inputs.depth }}" \
+          --timeout "${{ inputs.timeout }}" \
+          --min-kill "${{ inputs.min-kill }}" \
+          "${extra[@]}"

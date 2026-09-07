@@ -35,5 +35,9 @@ benchmarks/**/*.sby.log
 # Secrets (OpenRouter / vLLM keys). Never commit.
 .env
 
+# Nix
+result
+.direnv/
+
 # OS
 .DS_Store

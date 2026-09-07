@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from formalsynapse.assertllm2 import discover, load_mutants, select, write_index
 from formalsynapse.cli import _generate_jobs, build_parser, main
 
@@ -23,6 +25,10 @@ def test_discovers_verilog_and_skips_vhdl() -> None:
     assert not vhdl.open_ok
     assert vhdl.skip_reason is not None
     assert "VHDL" in vhdl.skip_reason
+    dual = next(d for d in designs if d.name == "dual_clk")
+    assert not dual.open_ok
+    assert dual.skip_reason is not None
+    assert "posedge and negedge" in dual.skip_reason
 
 
 def test_select_open_only_and_name() -> None:
@@ -87,3 +93,12 @@ def test_generate_jobs_assertllm2_resolves_spec() -> None:
     assert job.top == "tiny_box"
     assert job.extras == ()
     assert job.mutants is not None
+
+
+def test_generate_jobs_skips_dual_edge_clock(capsys: pytest.CaptureFixture[str]) -> None:
+    args = build_parser().parse_args(
+        ["generate", "--suite", "assertllm2", "--root", str(FIXTURE), "--only", "dual_clk"]
+    )
+    jobs = _generate_jobs(args)
+    assert jobs is None
+    assert "posedge and negedge" in capsys.readouterr().out

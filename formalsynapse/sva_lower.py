@@ -128,12 +128,31 @@ def expand_macros(text: str, defines: Mapping[str, str]) -> str:
     return text
 
 
+_TICK_LABEL = re.compile(r"`([A-Za-z_]\w*)(\s*:)")
+
+
+def strip_tick_labels(text: str) -> str:
+    """Turn stray-tick labels (`` `a_foo: ``) into ordinary labels (``a_foo:``)."""
+
+    def _repl(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in _DIRECTIVE:
+            return match.group(0)
+        return f"{name}{match.group(2)}"
+
+    return _TICK_LABEL.sub(_repl, text)
+
+
 def leftover_macros(text: str) -> tuple[str, ...]:
-    """`` `NAME `` tokens that are not preprocessor directives."""
+    """`` `NAME `` tokens that are not preprocessor directives or labels."""
     found: list[str] = []
     for match in _MACRO.finditer(text):
         name = match.group(1)
-        if name not in _DIRECTIVE and name not in found:
+        if name in _DIRECTIVE:
+            continue
+        if re.match(r"\s*:", text[match.end() :]):
+            continue
+        if name not in found:
             found.append(name)
     return tuple(found)
 
@@ -791,6 +810,7 @@ def lower(sva_text: str, *, defines: Mapping[str, str] | None = None) -> Lowered
     text = _unwrap_ifdef(sva_text)
     if defines:
         text = expand_macros(text, defines)
+    text = strip_tick_labels(text)
     leftover = leftover_macros(text)
     if leftover:
         names = ", ".join(f"`{n}" for n in leftover)

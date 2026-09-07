@@ -261,3 +261,12 @@ a_dec: assert property (@(posedge clk) disable iff (rst) clear |-> q_next == `CN
 """
     with pytest.raises(LowerError, match="undefined macros"):
         lower(text)
+
+
+def test_lower_accepts_tick_prefixed_label() -> None:
+    text = """
+`a_counter_reset: assert property (@(posedge clk) disable iff (rst) q == 0);
+"""
+    result = lower(text)
+    assert "a_counter_reset" in result.names
+    assert "`a_counter_reset" not in result.verilog

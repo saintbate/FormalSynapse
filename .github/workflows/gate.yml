@@ -1,0 +1,22 @@
+name: fsyn-gate
+
+# Runs the open sby gate on the golden counter on every PR.
+# External repos: checkout FormalSynapse into `.fsyn` and
+# `uses: ./.fsyn/.github/actions/fsyn-gate` with dut/sva/top.
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  counter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/fsyn-gate
+        with:
+          dut: benchmarks/golden/counter/counter.sv
+          sva: benchmarks/golden/counter/counter.sva.sv
+          top: counter

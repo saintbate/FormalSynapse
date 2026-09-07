@@ -17,6 +17,7 @@ from formalsynapse.assertllm2 import select as select_assertllm2
 from formalsynapse.assertllm2 import write_index as write_assertllm2_index
 from formalsynapse.cegar import MAX_FEEDBACK, Attempt, run_block, run_suite
 from formalsynapse.dataset import log_suite, log_trajectory
+from formalsynapse.design_context import dual_edge_clock_reason_from_files
 from formalsynapse.gate import GateReport, evaluate, write_report
 from formalsynapse.generator import VLLMGenerator, ping
 from formalsynapse.mutate import Mutant
@@ -289,12 +290,12 @@ def _generate_jobs(args: argparse.Namespace) -> list[GenerateJob] | None:
         except FileNotFoundError as exc:
             _print(str(exc))
             return None
-        chosen = select_assertllm2(designs, only=args.only, open_only=True)
-        if not chosen:
-            _print("no open AssertLLM2 designs selected")
-            return None
+        wanted = select_assertllm2(designs, only=args.only, open_only=args.only is None)
         jobs: list[GenerateJob] = []
-        for design in chosen:
+        for design in wanted:
+            if not design.open_ok:
+                _print(f"[{design.key}] skip: {design.skip_reason}")
+                continue
             if design.spec is None:
                 _print(f"[{design.key}] missing spec.md")
                 continue
@@ -308,6 +309,9 @@ def _generate_jobs(args: argparse.Namespace) -> list[GenerateJob] | None:
                     mutants=load_assertllm2_mutants(design, max_mutants=max_mutants),
                 )
             )
+        if not jobs:
+            _print("no open AssertLLM2 designs selected")
+            return None
         return jobs
     if args.block is None:
         _print("pass a block path or --suite assertllm2 --only <name>")
@@ -329,12 +333,17 @@ def cmd_generate(args: argparse.Namespace) -> int:
         _print("sby/yosys/z3 not found; run scripts/install_toolchain.sh && source scripts/env.sh")
         return 1
     jobs = _generate_jobs(args)
-    if jobs is None:
+    if not jobs:
         return 1
     failed = 0
     min_kill = float(getattr(args, "min_kill", 0.0))
     max_mutants = int(getattr(args, "max_mutants", 8))
     for job in jobs:
+        clock_skip = dual_edge_clock_reason_from_files(job.dut, *job.extras)
+        if clock_skip:
+            _print(f"{job.name}: skip: {clock_skip}")
+            failed += 1
+            continue
 
         def _on_attempt(att: Attempt, block: str = job.name) -> None:
             _print_suite_attempt(block, att)
@@ -516,6 +525,10 @@ def cmd_gate(args: argparse.Namespace) -> int:
             _print(str(exc))
             return 1
         chosen = select_assertllm2(designs, only=args.only, open_only=not args.include_skipped)
+        if args.only:
+            for design in select_assertllm2(designs, only=args.only, open_only=False):
+                if not design.open_ok and not args.include_skipped:
+                    _print(f"[{design.key}] skip: {design.skip_reason}")
         if not chosen:
             _print("no open AssertLLM2 designs selected")
             return 1
@@ -585,6 +598,11 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 pairs.append((name, dut, sva_path, name))
 
         for name, dut, sva_path, top in pairs:
+            clock_skip = dual_edge_clock_reason_from_files(dut)
+            if clock_skip:
+                _print(f"[{name}] skip: {clock_skip}")
+                failed += 1
+                continue
             block_dir = workdir / f"gate-{name}"
             _print(f"[{name}] prove + cover + COI + mutation ({args.max_mutants} mutants)")
             report = evaluate(

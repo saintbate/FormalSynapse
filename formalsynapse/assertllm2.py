@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from formalsynapse.design_context import dual_edge_clock_reason_from_files
 from formalsynapse.mutate import Mutant
 from formalsynapse.sva_inject import module_names
 
@@ -191,6 +192,8 @@ def discover(root: Path) -> tuple[Design, ...]:
                     skip = "VHDL; Yosys open grader is Verilog/SV only"
                 elif spec_path is None:
                     skip = "missing spec.md"
+                else:
+                    skip = dual_edge_clock_reason_from_files(dut, *extras)
             found.append(
                 Design(
                     key=key,

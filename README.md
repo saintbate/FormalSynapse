@@ -72,7 +72,9 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
 PROJECT_CONTEXT.md            master project context (Part 1 of the founding prompt)
 .cursorrules                  Cursor agent rules
 kilo.jsonc, .kilo/rules/      Kilo Code permissions and agent protocol
+flake.nix                     nix develop + `fsyn` package (nixpkgs yosys; full suite still install_toolchain.sh)
 scripts/                      install_toolchain.sh, env.sh
+.github/actions/fsyn-gate     reusable composite action for `fsyn gate` on a DUT/SVA pair
 benchmarks/smoke/counter/     end-to-end toolchain sanity check (one passing, one failing task)
 benchmarks/golden/<block>/    <block>.sv, <block>.spec.md, <block>.sva.sv, <block>.sby (protected)
 formalsynapse/                toolchain, sva_inject, sby_config, verify_harness, vcd_parser, cli
@@ -126,6 +128,33 @@ Anti-collision rules:
 2. In Cursor settings disable `Terminal > Integrated: AI Suggestions` so Kilo owns the shell.
 3. Kilo works on `agent/<task>` branches (for example `agent/fifo-sva`), never directly on `main`.
 4. `benchmarks/golden/**` is protected; agents write to `work/` or `output/`.
+
+## Nix and CI gate
+
+```bash
+nix develop          # python + nixpkgs yosys/sby/z3; still source scripts/env.sh for yosys-slang
+```
+
+This repo runs `fsyn gate` on the golden `counter` in `.github/workflows/gate.yml`.
+An external repo can do the same on PRs:
+
+```yaml
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: <this-repo>
+          path: .fsyn
+      - uses: ./.fsyn/.github/actions/fsyn-gate
+        with:
+          source: .fsyn
+          dut: rtl/foo.sv
+          sva: formal/foo.sva.sv
+          top: foo
+```
 
 ## Quality gates
 

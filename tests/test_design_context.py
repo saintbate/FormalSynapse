@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from formalsynapse.design_context import extract_context
+from formalsynapse.design_context import dual_edge_clocks, extract_context
 from formalsynapse.sva_inject import strip_formal_blocks
 
 
@@ -51,3 +51,22 @@ endmodule
     assert not ctx.reset_active_low
     assert ctx.disable_iff_clause() == "disable iff (rst)"
     assert "active-high" in ctx.render()
+
+
+def test_async_reset_is_not_dual_edge() -> None:
+    rtl = """
+module m(input clk, input rst_n, output q);
+    always @(posedge clk or negedge rst_n) q <= 0;
+endmodule
+"""
+    assert dual_edge_clocks(rtl) == ()
+
+
+def test_both_edges_of_one_clock_are_detected() -> None:
+    rtl = """
+module m(input i_clk, input i_rst);
+    always @(posedge i_clk or negedge i_rst) ;
+    always @(negedge i_clk or negedge i_rst) ;
+endmodule
+"""
+    assert dual_edge_clocks(rtl) == ("i_clk",)

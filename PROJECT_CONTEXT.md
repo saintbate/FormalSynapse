@@ -205,15 +205,19 @@ not JasperGold). `versatile_counter` is the prior row for comparison:
 
 CEGAR prove 2/5, `--min-kill 0.25` met 1/5. First-turn extract (`<think>`
 only) is still common. `pwm` is a DUT/frontend skip, not a model miss —
-open Yosys BMC cannot clock that block. The leftover-macro check also
-rejected a turn that named `` `a_counter_reset `` as if it were
-`` `CNT_LENGTH ``; that message should not fire on assertion labels.
+open Yosys BMC cannot clock that block. Generate now skips dual-edge
+clocks before sampling. Stray-tick labels (`` `a_counter_reset: ``) are
+rewritten to ordinary labels so leftover-macro does not fire.
 
 ### Weeks 5–6
 
 `fsyn` unit CI (ruff, mypy, pytest minus `toolchain`/`llm`) is in
-`.github/workflows/ci.yml`. Next: Nix flake for the OSS CAD Suite, then one
-external repo (Ibex, Tiny Tapeout, or a riscv-formal user) running the gate on PRs.
+`.github/workflows/ci.yml`. A Nix flake (`flake.nix`) provides the Python
+package and a `nix develop` shell with nixpkgs yosys/sby/z3; the full OSS
+CAD Suite (yosys-slang) remains `scripts/install_toolchain.sh`.
+`.github/workflows/gate.yml` runs `fsyn gate` on the golden `counter` on
+every PR. External repos checkout this tree into `.fsyn` and call
+`.github/actions/fsyn-gate` with their DUT/SVA/top.
 
 ### Weeks 7–9
 

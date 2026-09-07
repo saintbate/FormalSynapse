@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.sva_lower import strip_comments
@@ -40,6 +41,7 @@ _LOCALPARAM = re.compile(
 _CLOCK_NAMES = frozenset({"clk", "clock"})
 _RESET_NAMES = frozenset({"rst_n", "rst", "reset_n", "reset", "resetn"})
 _ACTIVE_LOW_RESET = frozenset({"rst_n", "reset_n", "resetn"})
+_EDGE = re.compile(r"\b(posedge|negedge)\s+([A-Za-z_]\w*)", re.I)
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,35 @@ class DesignContext:
             lines.append("constants: " + ", ".join(self.constants))
         lines.append("Do not invent signal names that are not listed above.")
         return "\n".join(lines)
+
+
+def dual_edge_clocks(*texts: str) -> tuple[str, ...]:
+    """Nets clocked on both ``posedge`` and ``negedge``. Yosys BMC cannot handle those."""
+    pos: set[str] = set()
+    neg: set[str] = set()
+    for text in texts:
+        for kind, name in _EDGE.findall(strip_comments(text)):
+            if kind.lower() == "posedge":
+                pos.add(name)
+            else:
+                neg.add(name)
+    return tuple(sorted(pos & neg))
+
+
+def dual_edge_clock_reason(*texts: str) -> str | None:
+    names = dual_edge_clocks(*texts)
+    if not names:
+        return None
+    listed = ", ".join(names)
+    return f"Yosys BMC cannot clock {listed} (posedge and negedge)"
+
+
+def dual_edge_clock_reason_from_files(*paths: Path) -> str | None:
+    texts: list[str] = []
+    for path in paths:
+        if path.is_file():
+            texts.append(path.read_text(encoding="utf-8", errors="replace"))
+    return dual_edge_clock_reason(*texts)
 
 
 def extract_context(rtl: str, top: str) -> DesignContext:
