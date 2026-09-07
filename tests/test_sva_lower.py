@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from formalsynapse.sva_lower import (
+    LoweredSVA,
     LowerError,
     base_label,
     blank_comments,
@@ -293,8 +294,7 @@ a_idle: assert property (@(posedge clk) disable iff (!resetn) !busy |-> txd);
 # ---- grader-integrity fixes -----------------------------------------------------------------
 
 
-def _depth(result: object, name: str) -> int:
-    assert hasattr(result, "assertions")
+def _depth(result: LoweredSVA, name: str) -> int:
     return next(a.history_depth for a in result.assertions if a.name == name)
 
 
