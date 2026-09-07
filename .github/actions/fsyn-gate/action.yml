@@ -1,5 +1,5 @@
 name: fsyn-gate
-description: Prove an SVA against a DUT with sby and score mutation kill
+description: Prove an SVA against a DUT with sby, check vacuity, and score mutation kill
 inputs:
   source:
     description: Path to a FormalSynapse checkout
@@ -14,7 +14,7 @@ inputs:
     description: Top module name
     required: true
   extra:
-    description: Extra compile unit (optional)
+    description: Extra compile units, whitespace/newline separated (optional)
     default: ""
   min-kill:
     description: Minimum mutation-kill rate (0–1)
@@ -25,6 +25,12 @@ inputs:
   timeout:
     description: sby timeout in seconds
     default: "180"
+  max-mutants:
+    description: Mutants to score
+    default: "8"
+  trusted:
+    description: Allow `assume property` / fsyn:verbatim in the SVA (hand-written blocks only)
+    default: "false"
 runs:
   using: composite
   steps:
@@ -42,26 +48,47 @@ runs:
       env:
         PLATFORM: linux-x64
         RELEASE: "2026-08-31"
+        FSYN_SOURCE: ${{ inputs.source }}
       run: |
         export FSYN_TOOLCHAIN_DIR="$HOME/.local/opt/oss-cad-suite"
-        bash "${{ inputs.source }}/scripts/install_toolchain.sh"
+        bash "$FSYN_SOURCE/scripts/install_toolchain.sh"
     - name: Install fsyn
       shell: bash
-      run: uv sync --project "${{ inputs.source }}"
+      env:
+        FSYN_SOURCE: ${{ inputs.source }}
+      run: uv sync --project "$FSYN_SOURCE"
     - name: Gate
       shell: bash
+      # Inputs go through env so a path with spaces or shell metacharacters cannot be
+      # interpolated into the script.
+      env:
+        FSYN_SOURCE: ${{ inputs.source }}
+        FSYN_DUT: ${{ inputs.dut }}
+        FSYN_SVA: ${{ inputs.sva }}
+        FSYN_TOP: ${{ inputs.top }}
+        FSYN_EXTRA: ${{ inputs.extra }}
+        FSYN_DEPTH: ${{ inputs.depth }}
+        FSYN_TIMEOUT: ${{ inputs.timeout }}
+        FSYN_MIN_KILL: ${{ inputs.min-kill }}
+        FSYN_MAX_MUTANTS: ${{ inputs.max-mutants }}
+        FSYN_TRUSTED: ${{ inputs.trusted }}
       run: |
         set -euo pipefail
         export PATH="$HOME/.local/opt/oss-cad-suite/bin:$PATH"
-        extra=()
-        if [[ -n "${{ inputs.extra }}" ]]; then
-          extra+=(--extra "${{ inputs.extra }}")
+        args=()
+        for f in $FSYN_EXTRA; do
+          args+=(--extra "$f")
+        done
+        if [[ "$FSYN_TRUSTED" == "true" ]]; then
+          args+=(--trusted)
         fi
-        uv run --project "${{ inputs.source }}" fsyn gate \
-          --dut "${{ inputs.dut }}" \
-          --sva "${{ inputs.sva }}" \
-          --top "${{ inputs.top }}" \
-          --depth "${{ inputs.depth }}" \
-          --timeout "${{ inputs.timeout }}" \
-          --min-kill "${{ inputs.min-kill }}" \
-          "${extra[@]}"
+        uv run --project "$FSYN_SOURCE" fsyn gate \
+          --dut "$FSYN_DUT" \
+          --sva "$FSYN_SVA" \
+          --top "$FSYN_TOP" \
+          --depth "$FSYN_DEPTH" \
+          --timeout "$FSYN_TIMEOUT" \
+          --min-kill "$FSYN_MIN_KILL" \
+          --max-mutants "$FSYN_MAX_MUTANTS" \
+          --markdown "${GITHUB_STEP_SUMMARY:-fsyn-gate-summary.md}" \
+          "${args[@]}"
