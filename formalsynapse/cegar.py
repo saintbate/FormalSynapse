@@ -95,6 +95,7 @@ class Trajectory:
     prompt: str
     attempts: tuple[Attempt, ...]
     elapsed_s: float
+    system: str = ""
 
     @property
     def winner(self) -> Attempt | None:
@@ -149,6 +150,7 @@ class Trajectory:
                 continue
             rows.append(
                 {
+                    "type": "heal",
                     "block": self.block,
                     "prompt": self.prompt,
                     "faulty_attempt": att.sva,
@@ -477,6 +479,7 @@ def run_block(
         prompt=user0,
         attempts=tuple(attempts),
         elapsed_s=time.monotonic() - started,
+        system=messages[0].content if messages and messages[0].role == "system" else "",
     )
 
 

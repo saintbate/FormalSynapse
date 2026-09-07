@@ -1,0 +1,7 @@
+# GPU box only. The formalsynapse package stays stdlib-only; these are for scripts/distill/train_lora.py.
+torch>=2.4
+transformers>=4.51
+trl>=0.19
+peft>=0.15
+datasets>=3.0
+accelerate>=1.0

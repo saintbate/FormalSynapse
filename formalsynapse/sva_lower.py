@@ -560,6 +560,22 @@ def _redundant_reset_antecedent(ante: str, disable: str | None) -> bool:
 
 _CLOCKING = re.compile(r"^\s*@\s*\(\s*posedge\s+([A-Za-z_]\w*)\s*\)\s*", re.S)
 _DISABLE = re.compile(r"^\s*disable\s+iff\s*\(", re.S)
+_BOOL_KEYWORD = re.compile(r"\b(or|and|not)\b")
+
+
+def _rewrite_boolean_keywords(text: str) -> str:
+    """``a or b`` -> ``a || b``, ``a and b`` -> ``a && b``, ``not a`` -> ``!a``.
+
+    SVA's sequence ``or``/``and`` over plain booleans (the only sequences this lowerer
+    accepts) are the boolean operators; the keywords themselves are gate primitives in
+    Verilog and cannot be identifiers, so the rewrite is exact and cannot touch a signal.
+    """
+    repl = {"or": "||", "and": "&&", "not": "!"}
+    if not _BOOL_KEYWORD.search(text):
+        return text
+    if "##" in text:
+        raise LowerError("sequence or/and/not combined with ## delays is not supported; use ||/&&/! on booleans")
+    return _BOOL_KEYWORD.sub(lambda m: repl[m.group(1)], text)
 
 
 def parse_property_body(
@@ -598,7 +614,7 @@ def parse_property_body(
         disable = default_disable
     elif implicit_clock:
         disable = fallback_disable
-    rest = rest.strip()
+    rest = _rewrite_boolean_keywords(rest.strip())
     if not rest:
         raise LowerError("property has no body")
     parts = _split_top_level(rest, ("|->", "|=>"))
@@ -609,7 +625,8 @@ def parse_property_body(
         raise LowerError(
             "antecedent is a reset signal or the disable-iff condition; that is either "
             "vacuous or an always-on invariant (e.g. rst_n |-> count==0 means count is "
-            "always 0). Delete this property and encode post-reset behavior"
+            "always 0). To check the reset state write $rose(rst_n) |-> count == 0 "
+            "(first cycle out of reset); otherwise delete this property"
         )
     if len(parts) == 1:
         return Property(clock, disable, ante, None, None, None)

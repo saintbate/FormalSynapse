@@ -41,11 +41,13 @@ def system_prompt(
         clause = f"disable iff ({disable})"
         polarity = "active-low" if active_low else "active-high"
         ante = f"{reset} or {disable}" if disable != reset else reset
+        out_of_reset = f"$rose({reset})" if active_low else f"$fell({reset})"
         reset_rule = (
             f"- Reset `{reset}` is {polarity}. Never use {ante} as the antecedent.\n"
             f"  {clause} already excludes reset. `{reset} |-> count == 0` means \"count is always 0\"\n"
-            "  and will FAIL. Encode the numbered post-reset behaviors instead (increment, hold,\n"
-            "  grant-follows-request, …)."
+            f"  and will FAIL. To check the reset state write `{out_of_reset} |-> count == 0`\n"
+            "  (first cycle out of reset). Encode the numbered post-reset behaviors too (increment,\n"
+            "  hold, grant-follows-request, …)."
         )
     return f"""\
 You are a formal hardware verification engineer. Emit ONLY a SystemVerilog assertion block.

@@ -566,6 +566,52 @@ def test_suite_metrics() -> None:
     assert "first-pass" in text
 
 
+def test_sft_row_only_for_proven_winner_and_builder_filters(tmp_path: Path) -> None:
+    import json
+    import subprocess
+    import sys
+
+    from formalsynapse.dataset import log_trajectory, sft_row
+
+    lost = Trajectory("c", "c", "p", (Attempt(1, BAD, _result("FAIL")),), 1.0, system="sys")
+    assert sft_row(lost) is None
+    won = Trajectory(
+        "b",
+        "b",
+        "user prompt",
+        (Attempt(1, BAD, _result("FAIL")), Attempt(2, GOOD, _result("PASS"), killed=3, valid_mutants=4)),
+        1.0,
+        system="sys prompt",
+    )
+    row = sft_row(won)
+    assert row is not None
+    assert row["system"] == "sys prompt" and row["prompt"] == "user prompt" and row["sva"] == GOOD
+    assert row["kill_rate"] == 0.75 and row["turn"] == 2 and row["first_pass"] is False
+    weak = Trajectory("w", "w", "p", (Attempt(1, GOOD, _result("PASS"), killed=0, valid_mutants=5),), 1.0)
+    log = tmp_path / "gen.jsonl"
+    for t in (lost, won, weak):
+        log_trajectory(log, t)
+    kinds = [json.loads(ln)["type"] for ln in log.read_text().splitlines()]
+    assert kinds.count("sft") == 2 and kinds.count("trajectory") == 3
+
+    out = tmp_path / "train.jsonl"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "distill" / "build_sft.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), str(log), "--out", str(out), "--min-kill", "0.5", "--repeat", "4"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "below-min-kill" in proc.stdout
+    examples = [json.loads(ln) for ln in out.read_text().splitlines()]
+    assert {e["block"] for e in examples} == {"b"}
+    assert len(examples) == 3  # weight 0.75 * repeat 4
+    assert examples[0]["messages"][0] == {"role": "system", "content": "sys prompt"}
+    assert examples[0]["messages"][-1]["role"] == "assistant"
+    assert examples[0]["messages"][-1]["content"].startswith("`ifdef FORMAL")
+
+
 def test_jsonl_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     n = append_jsonl(path, [{"block": "x", "turns": 2}])

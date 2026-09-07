@@ -401,6 +401,26 @@ def test_bare_identifier_is_an_invariant() -> None:
     assert "a_busy: assert((idle))" in result.verilog.replace("  ", " ")
 
 
+def test_sva_boolean_keywords_become_verilog_operators() -> None:
+    text = (
+        "a_hold: assert property (@(posedge clk) disable iff (!rst_n) "
+        "(up and down) or (not up and not down) |=> q == $past(q));"
+    )
+    result = lower(text, auto_cover=False)
+    checks = "\n".join(ln for ln in result.verilog.splitlines() if not ln.strip().startswith("//"))
+    assert " or " not in checks and " and " not in checks
+    assert "(up && down) || (! up && ! down)" in checks
+    with pytest.raises(LowerError, match="## delays"):
+        lower("a_x: assert property (@(posedge clk) (a ##1 b) or c |-> d);", auto_cover=False)
+
+
+def test_reset_state_via_rose_is_accepted_and_bare_reset_is_not() -> None:
+    ok = lower("a_r: assert property (@(posedge clk) disable iff (!rst_n) $rose(rst_n) |-> q == 0);", reset="rst_n")
+    assert "a_r" in ok.names
+    with pytest.raises(LowerError, match=r"\$rose\(rst_n\)"):
+        lower("a_r: assert property (@(posedge clk) disable iff (!rst_n) !rst_n |-> q == 0);", reset="rst_n")
+
+
 def test_sequence_keyword_inside_string_is_fine() -> None:
     text = SVA.replace('$error("inc")', '$error("sequence broke")')
     assert "a_demo_inc" in lower(text).names

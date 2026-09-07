@@ -38,9 +38,43 @@ def log_suite(path: Path, report: SuiteReport) -> int:
     return append_jsonl(path, rows)
 
 
+def sft_row(traj: Trajectory) -> dict[str, Any] | None:
+    """One distillation example per trajectory: the prompt pair and the winning SVA.
+
+    Only emitted when the winner is a real proof (asserts lowered, non-vacuous). ``kill_rate``
+    is ``None`` when mutation was not scored, so a filter can distinguish "unscored" from 0%.
+    The verifier's evidence travels with the row; weighting is the trainer's decision
+    (see ``scripts/distill/build_sft.py``).
+    """
+    chosen = traj.winner
+    if chosen is None or not chosen.proven:
+        return None
+    lowered = chosen.result.lowered
+    return {
+        "type": "sft",
+        "block": traj.block,
+        "top": traj.top,
+        "system": traj.system,
+        "prompt": traj.prompt,
+        "sva": chosen.sva,
+        "turn": chosen.turn,
+        "turns": traj.turns,
+        "first_pass": traj.first_pass,
+        "asserts": sum(1 for a in lowered.assertions if a.kind == "assert") if lowered is not None else None,
+        "skipped": len(chosen.result.skipped),
+        "cover_ok": chosen.cover.ok if chosen.cover is not None else None,
+        "killed": chosen.killed,
+        "valid_mutants": chosen.valid_mutants,
+        "kill_rate": chosen.kill_rate if chosen.valid_mutants else None,
+    }
+
+
 def log_trajectory(path: Path, traj: Trajectory) -> int:
     rows = list(traj.dataset_rows())
     chosen = traj.winner
+    sft = sft_row(traj)
+    if sft is not None:
+        rows.append(sft)
     rows.append(
         {
             "type": "trajectory",

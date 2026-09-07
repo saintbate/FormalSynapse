@@ -12,7 +12,7 @@ import os
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 from urllib.parse import urljoin
 
@@ -63,6 +63,11 @@ class VLLMGenerator:
     timeout_s: float = 180.0
     guided: bool = False
     guided_backend: str = "off"  # grammar | regex | off
+    # CodeV-SVA-14B is Qwen3-based: with thinking on it spends >4k tokens reasoning inside the
+    # answer and rarely closes the block within the budget. Off by default; FSYN_LLM_THINKING=1
+    # turns it on. Sent as chat_template_kwargs.enable_thinking; servers that reject the field get
+    # one retry without it.
+    thinking: bool = field(default_factory=lambda: _env("FSYN_LLM_THINKING", "0") not in ("0", "", "false", "off"))
 
     def generate(self, messages: list[Message]) -> str:
         url = urljoin(self.base_url.rstrip("/") + "/", "chat/completions")
@@ -72,6 +77,8 @@ class VLLMGenerator:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if not self.thinking:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         if self.guided and self.guided_backend == "grammar":
             payload["guided_grammar"] = SVA_EBNF
         elif self.guided and self.guided_backend == "regex":
@@ -96,17 +103,9 @@ class VLLMGenerator:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:800]
             if exc.code in {400, 422} and "context length" in detail.lower() and self.max_tokens > 512:
-                smaller = VLLMGenerator(
-                    base_url=self.base_url,
-                    model=self.model,
-                    api_key=self.api_key,
-                    temperature=self.temperature,
-                    max_tokens=max(256, self.max_tokens // 2),
-                    timeout_s=self.timeout_s,
-                    guided=self.guided,
-                    guided_backend=self.guided_backend,
-                )
-                return smaller.generate(messages)
+                return replace(self, max_tokens=max(256, self.max_tokens // 2)).generate(messages)
+            if exc.code in {400, 422} and not self.thinking and "chat_template_kwargs" in detail:
+                return replace(self, thinking=True).generate(messages)
             if self.guided and exc.code in {400, 422}:
                 return self._retry_unguided(messages, detail)
             raise GenerateError(f"LLM HTTP {exc.code} at {url}: {detail}") from exc
@@ -116,16 +115,7 @@ class VLLMGenerator:
 
     def _retry_unguided(self, messages: list[Message], detail: str) -> str:
         """Some servers reject guided_grammar; fall back to unconstrained decode once."""
-        unguided = VLLMGenerator(
-            base_url=self.base_url,
-            model=self.model,
-            api_key=self.api_key,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            timeout_s=self.timeout_s,
-            guided=False,
-            guided_backend="off",
-        )
+        unguided = replace(self, guided=False, guided_backend="off")
         try:
             return unguided.generate(messages)
         except GenerateError as exc:
