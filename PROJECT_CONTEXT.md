@@ -192,6 +192,23 @@ Re-gating that same SVA after the expand: prove PASS, kill 3/8 (38%) —
 clear-swap, clear-to-1, and rewind decrement. Below the 50% bar, but
 honest and better than the 25% one-property block.
 
+Four more AssertLLM2 designs at `--min-kill 0.25`, 8×4, BMC 20 (sby only,
+not JasperGold). `versatile_counter` is the prior row for comparison:
+
+| design | prove | kill | note |
+|---|---|---|---|
+| versatile_counter | PASS | 3/8 (38%) | meets 25% |
+| uart | FAIL | n/a | `a_idle_ser_out` @ step 1 on every repair |
+| present_cipher_encryption_core | PASS | 1/7 (14%) | below bar |
+| programmable_interval_timer | FAIL | n/a | `a_counter_reset` @ step 2 |
+| pwm | ERROR | n/a | Yosys: `i_clk` both polarities in `down_clocking_odd` |
+
+CEGAR prove 2/5, `--min-kill 0.25` met 1/5. First-turn extract (`<think>`
+only) is still common. `pwm` is a DUT/frontend skip, not a model miss —
+open Yosys BMC cannot clock that block. The leftover-macro check also
+rejected a turn that named `` `a_counter_reset `` as if it were
+`` `CNT_LENGTH ``; that message should not fire on assertion labels.
+
 ### Weeks 5–6
 
 `fsyn` unit CI (ruff, mypy, pytest minus `toolchain`/`llm`) is in
