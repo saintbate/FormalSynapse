@@ -347,6 +347,54 @@ def test_skipped_statements_are_fed_back_and_stripped(tmp_path: Path, monkeypatc
     assert "p_t_good" in second.sva and "p_t_fix" in second.sva and "p_t_chain" not in second.sva
 
 
+TRUNCATED = GOOD.replace(
+    "`endif",
+    "// After a rising edge, pulse must drop.\nproperty p_t_tail;\n    @(posedge clk) disable iff (!rst_n)\n"
+    "    pulse |=> (din && !pulse); // Actually we don't need\n`endif",
+)
+
+
+def test_truncated_property_is_skipped_not_silently_dropped() -> None:
+    from formalsynapse.sva_edit import strip_truncated
+    from formalsynapse.sva_lower import lower
+
+    low = lower(TRUNCATED, auto_cover=False)
+    assert low.names == ("a_t_good",)
+    assert low.skipped == ("property 'p_t_tail': truncated (no endproperty)",)
+    cut = strip_truncated(TRUNCATED)
+    assert "p_t_tail" not in cut and "a_t_good" in cut
+    assert lower(cut, auto_cover=False).skipped == ()
+    half_stmt = GOOD.replace("`endif", 'a_t_half: assert property (p_t_good) else $error("x\n`endif')
+    low2 = lower(half_stmt, auto_cover=False)
+    assert low2.names == ("a_t_good",) and any("a_t_half" in s and "truncated" in s for s in low2.skipped)
+    assert "a_t_half" not in strip_truncated(half_stmt)
+
+
+def test_canonical_sva_drops_reasoning_comments_but_keeps_checks() -> None:
+    import importlib.util
+
+    from formalsynapse.sva_lower import lower
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "distill" / "build_sft.py"
+    spec = importlib.util.spec_from_file_location("build_sft", script)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    noisy = GOOD.replace(
+        "property p_t_good;",
+        "// Property 1: count increments\n// We reason at length here about why this\n"
+        "// is the right formulation and never stop.\nproperty p_t_good;",
+    ).replace(
+        "en |=> count == $past(count) + 4'd1;",
+        'en |=> count == $past(count) + 4\'d1; // trailing musing "with // inside"',
+    ).replace("`endif", "// dangling thought that is cut off mid-sen\n`endif")
+    clean = mod.canonical_sva(noisy)
+    assert "reason at length" not in clean and "trailing musing" not in clean and "dangling" not in clean
+    assert "// Property 1: count increments" in clean
+    assert lower(clean, auto_cover=False).names == lower(noisy, auto_cover=False).names == ("a_t_good",)
+    assert mod._canonical_or_raw(noisy) == (clean, True)
+
+
 def test_drop_duplicates_keeps_proven_copy() -> None:
     from formalsynapse.sva_edit import drop_duplicates
 

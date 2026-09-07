@@ -16,9 +16,12 @@ The verifier is the filter and the weight (RWOPD-style), never a judge:
 * unscored rows (``kill_rate`` is null: the mutator found no site) get ``--unscored-weight``;
 * ``weight`` = kill rate, floored at ``--floor`` so a proven-but-weak block still teaches
   syntax; ``--repeat K`` additionally duplicates each row ``round(weight * K)`` times for
-  trainers without per-sample weights.
+  trainers without per-sample weights;
+* the assistant turn is the proven block with the teacher's reasoning-in-comments removed
+  (``canonical_sva``); the text is re-lowered and must produce the same checks, else the
+  original is kept. ``--raw`` disables this.
 
-Stdlib only. Example::
+Stdlib + the repo's own package (for the lowerer). Example::
 
     python scripts/distill/build_sft.py \
         ~/.cache/formalsynapse/output/regen-*/golden.jsonl \
@@ -31,10 +34,15 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from formalsynapse.sva_edit import strip_truncated, unwrap_formal, wrap_formal  # noqa: E402
+from formalsynapse.sva_lower import LowerError, blank_comments, lower  # noqa: E402
 
 
 def _rows(paths: list[Path]) -> list[dict[str, Any]]:
@@ -68,6 +76,62 @@ def _keep(row: dict[str, Any], *, min_kill: float, require_cover: bool) -> str |
     return None
 
 
+_LINE_COMMENT = re.compile(r"^\s*//")
+_CODE_HEAD = re.compile(r"^\s*(?:property\b|sequence\b|[A-Za-z_]\w*\s*:\s*(?:assert|cover|assume)\b)")
+_MAX_HEADER = 140
+
+
+def canonical_sva(text: str) -> str:
+    """Strip reasoning-in-comments from a proven block without changing what it lowers to.
+
+    CodeV-SVA-14B leaks its deliberation into ``//`` comments (hundreds of lines, often cut
+    off mid-sentence at the token cap). Training on that teaches the student to ramble. Keep
+    only short one-line comments that head a property or statement; drop the rest and
+    block comments. The caller re-lowers both texts and falls back to the original if the
+    set of lowered checks differs, so this can never alter the supervision's meaning.
+    """
+    body = unwrap_formal(strip_truncated(text))
+    # Drop every comment except whole-line ``//`` ones, using the offset-preserving blanker so a
+    # ``//`` inside an $error string is left alone.
+    blanked = blank_comments(body)
+    kept_chars: list[str] = []
+    for line, bl in zip(body.splitlines(), blanked.splitlines(), strict=True):
+        if _LINE_COMMENT.match(line):
+            kept_chars.append(line.rstrip())  # whole-line comment: decided below
+        else:
+            kept_chars.append(bl.rstrip() if bl != line else line.rstrip())
+    lines = kept_chars
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _LINE_COMMENT.match(line):
+            out.append(line)
+            i += 1
+            continue
+        # A run of whole-line comments: keep its first line iff the run heads code and is short.
+        j = i
+        while j < len(lines) and _LINE_COMMENT.match(lines[j]):
+            j += 1
+        nxt = next((ln for ln in lines[j:] if ln.strip()), "")
+        if _CODE_HEAD.match(nxt) and len(line) <= _MAX_HEADER:
+            out.append(line)
+        i = j
+    joined = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return wrap_formal(joined)
+
+
+def _canonical_or_raw(sva: str) -> tuple[str, bool]:
+    """Return (text, canonicalised?)."""
+    try:
+        clean = canonical_sva(sva)
+        if lower(clean, auto_cover=False).names == lower(sva, auto_cover=False).names:
+            return clean, True
+    except LowerError:
+        pass
+    return sva, False
+
+
 def _weight(row: dict[str, Any], *, floor: float, unscored: float) -> float:
     rate = row.get("kill_rate")
     if rate is None:
@@ -85,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-require-cover", action="store_true", help="keep rows whose cover run failed")
     ap.add_argument("--repeat", type=int, default=0, help="duplicate rows round(weight*K) times (0 = off)")
     ap.add_argument("--dedupe", action="store_true", help="keep the best-weighted row per block")
+    ap.add_argument("--raw", action="store_true", help="keep the model's comments verbatim (no canonicalisation)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
 
@@ -108,15 +173,19 @@ def main(argv: list[str] | None = None) -> int:
         kept = list(best.values())
 
     out_rows: list[dict[str, Any]] = []
+    n_canon = 0
     for row in kept:
         w = _weight(row, floor=args.floor, unscored=args.unscored_weight)
+        sva, canon = (row["sva"], False) if args.raw else _canonical_or_raw(row["sva"])
+        n_canon += canon
         messages = []
         if row.get("system"):
             messages.append({"role": "system", "content": row["system"]})
         messages.append({"role": "user", "content": row["prompt"]})
-        messages.append({"role": "assistant", "content": row["sva"].strip() + "\n"})
+        messages.append({"role": "assistant", "content": sva.strip() + "\n"})
         example = {
             "messages": messages,
+            "canonical": canon,
             "weight": round(w, 4),
             "block": row["block"],
             "top": row.get("top"),
@@ -139,7 +208,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"read {len(rows)} sft rows from {len(args.logs)} log(s)")
     for why, n in sorted(drops.items()):
         print(f"  dropped {n:4d}  {why}")
-    print(f"kept {len(kept)} rows -> {len(out_rows)} examples (mean weight {total_w / max(1, len(out_rows)):.2f})")
+    print(
+        f"kept {len(kept)} rows -> {len(out_rows)} examples "
+        f"(mean weight {total_w / max(1, len(out_rows)):.2f}; {n_canon}/{len(kept)} comment-canonicalised)"
+    )
     print(f"wrote {args.out}")
     return 0 if out_rows else 1
 

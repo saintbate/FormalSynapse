@@ -31,7 +31,14 @@ from formalsynapse.prompts import (
     vacuity_user,
     zero_shot_user,
 )
-from formalsynapse.sva_edit import drop_duplicates, has_assert, merge_sva, strip_labels, unwrap_formal
+from formalsynapse.sva_edit import (
+    drop_duplicates,
+    has_assert,
+    merge_sva,
+    strip_labels,
+    strip_truncated,
+    unwrap_formal,
+)
 from formalsynapse.sva_inject import strip_formal_blocks
 from formalsynapse.verify_harness import VerifyResult, verify
 
@@ -469,6 +476,8 @@ def run_block(
             # the model rewrites (or drops) them, and say why in every repair message.
             skipped_labels = _skipped_labels(best)
             proven_sva = strip_labels(best.sva, skipped_labels) if skipped_labels else best.sva
+            if any("truncated" in s for s in best.skipped):
+                proven_sva = strip_truncated(proven_sva)
             note_skips = bool(best.skipped)
             if best.vacuous:
                 kept = strip_labels(proven_sva, best.vacuous)

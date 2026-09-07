@@ -115,6 +115,33 @@ def drop_duplicates(kept: str, addition: str) -> tuple[str, tuple[str, ...]]:
     return wrap_formal(edited), tuple(dict.fromkeys(dropped))
 
 
+def strip_truncated(sva: str) -> str:
+    """Cut an unterminated trailing ``property`` / statement (the model hit its token cap).
+
+    Everything from the last ``property NAME`` without an ``endproperty``, or the last labeled
+    statement without a closing ``;``, to the end of the block is removed. Complete items are
+    untouched, so the result lowers to exactly the checks the truncated block did.
+    """
+    text = unwrap_formal(sva)
+    if not text:
+        return ""
+    clean = blank_comments(text, strings=True)
+    cut = len(text)
+    for m in _PROP.finditer(clean):
+        if _ENDPROP.search(clean, m.end()) is None:
+            cut = min(cut, _line_start(clean, m.start()))
+            break
+    for m in _LABELED.finditer(clean):
+        if m.start() >= cut:
+            break
+        if _statement_end(clean, m.end()) < 0:  # no closing ';' (nor a complete action block)
+            cut = min(cut, _line_start(clean, m.start()))
+            break
+    if cut >= len(text):
+        return wrap_formal(text)
+    return wrap_formal(text[:cut].rstrip())
+
+
 def strip_labels(sva: str, labels: tuple[str, ...]) -> str:
     """Drop labeled assert/assume/cover statements and orphaned property decls."""
     if not labels:

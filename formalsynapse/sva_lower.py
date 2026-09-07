@@ -809,11 +809,21 @@ def _extract_simple_decls(text: str) -> tuple[str, list[str]]:
     return _SIMPLE_DECL.sub("\n", text), decls
 
 
-def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults]:
+_OPEN_PROPERTY = re.compile(r"\bproperty\s+([A-Za-z_]\w*)")
+
+
+def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults, list[str]]:
+    """Returns (properties, statements, defaults, truncated).
+
+    ``truncated`` lists declarations the block ends in the middle of (the model hit its
+    token cap). Earlier statements are still lowered, but a truncated item is reported as
+    skipped so a PASS on the rest is not mistaken for a proof of the whole block.
+    """
     code = blank_comments(text, strings=True)  # same offsets as ``text``; strings blanked
     if _SEQUENCE_DECL.search(code):
         raise LowerError("'sequence' declarations are not supported; inline the sequence")
     defaults = _parse_defaults(code)
+    truncated: list[str] = []
     properties: dict[str, str] = {}
     for m in _PROPERTY_DECL.finditer(text):
         name, body = m.group(1), m.group(2)
@@ -834,6 +844,7 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults]:
         try:
             args, end = _balanced_call_args(remaining_code, stmt_m.end() - 1)
         except LowerError:
+            truncated.append(f"{kind} '{label or kind}': truncated (block ends inside the statement)")
             break
         if len(args) != 1:
             raise LowerError(f"{kind} property takes one argument")
@@ -842,6 +853,7 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults]:
         semi = remaining_code.find(";", end)
         if semi == -1:
             # Truncated last statement (hit max_tokens mid-$error). Keep prior ones.
+            truncated.append(f"{kind} '{label or kind}': truncated (no ';' after the statement)")
             break
         tail = remaining[end:semi].strip()
         if tail and not tail.startswith("else"):
@@ -865,6 +877,9 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults]:
     leftover = _DEFAULT_DIR.sub("", _strip_statements(remaining, statements))
     leftover = re.sub(r"`(?:ifdef|ifndef|endif)\b[^\n]*", " ", leftover)
     leftover = re.sub(r"\b(?:module|endmodule|bind)\b[^;]*;?", " ", leftover)
+    open_prop = _OPEN_PROPERTY.search(blank_comments(leftover, strings=True))
+    if open_prop is not None:
+        truncated.append(f"property '{open_prop.group(1)}': truncated (no endproperty)")
     leftover = re.sub(r"\b(?:property|generate|genvar)\b[\s\S]*$", " ", leftover)
     leftover_txt = leftover.strip()
     # Models often hit max_tokens mid-statement; a tail with no ';' is truncation, not extra syntax.
@@ -873,7 +888,7 @@ def _parse_block(text: str) -> tuple[dict[str, str], list[Statement], Defaults]:
             "unsupported text outside property/assert/assume/cover statements: "
             f"{leftover_txt[:120]!r}"
         )
-    return properties, statements, defaults
+    return properties, statements, defaults, truncated
 
 
 def _strip_statements(text: str, statements: list[Statement]) -> str:
@@ -1116,9 +1131,10 @@ def lower(
     text = strip_comments(text)
     text, decls = _extract_simple_decls(text)
     verbatim.extend(decls)
-    properties, statements, defaults = _parse_block(text)
+    properties, statements, defaults, truncated = _parse_block(text)
     if not statements and not verbatim:
-        raise LowerError("no assert/assume/cover property statements found")
+        detail = "; ".join(truncated)
+        raise LowerError("no assert/assume/cover property statements found" + (f" ({detail})" if detail else ""))
     if strict:
         assumes = [s.label for s in statements if s.kind == "assume"]
         if assumes:
@@ -1141,7 +1157,7 @@ def lower(
 
     parsed: dict[str, tuple[Property, ...]] = {}
     clocks: set[str] = set()
-    skipped: list[str] = []
+    skipped: list[str] = list(truncated)
     for name, body in properties.items():
         try:
             parsed[name] = parse(body)
