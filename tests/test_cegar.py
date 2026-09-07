@@ -442,6 +442,50 @@ def test_fit_context_compacts_history_then_shrinks_rtl(monkeypatch: pytest.Monke
     assert tiny[-1].content == repair and "truncated for the 8k context" in tiny[1].content
 
 
+def test_survivors_are_graded_when_every_sample_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model keeps re-emitting the same failing label: the block minus that label is graded by sby."""
+    from formalsynapse import cegar as cegar_mod
+
+    two = GOOD.replace("`endif", unwrap_body(BAD) + "\n`endif")
+    runs: list[str] = []
+
+    def fake_verify(_dut: Path, sva: str, *_a: object, **kw: object) -> VerifyResult:
+        runs.append(str(kw.get("run_name")))
+        if "a_fsyn_smoke" in sva:
+            return _result("PASS")
+        return _result("FAIL") if "p_t_bad" in sva else _result("PASS")
+
+    monkeypatch.setattr(cegar_mod, "verify", fake_verify)
+    dut = tmp_path / "t.sv"
+    spec = tmp_path / "t.spec.md"
+    dut.write_text("module t(input clk);\nendmodule\n")
+    spec.write_text("1. x\n")
+    # Turn 1 fails; the model re-emits the same failing slot in turn 2 (stuck) -> survivors graded.
+    again = BAD  # slot repair: the addition is merged with the kept survivors
+    gen = Scripted([two, again, again])
+    traj = run_block(dut_path=dut, spec_path=spec, top="t", generator=gen, workdir=tmp_path, max_feedback=2)
+    assert runs == [
+        "cegar-t-smoke",
+        "cegar-t-1-1",
+        "cegar-t-2-1",
+        "cegar-t-2-survivors",
+        "cegar-t-3-1",
+        "cegar-t-3-survivors",
+    ]
+    assert traj.turns == 3 and traj.ok and traj.status == "PASS"
+    winner = traj.winner
+    assert winner is not None and winner.from_survivors and "p_t_bad" not in winner.sva and "p_t_good" in winner.sva
+    assert not traj.first_pass and traj.healed
+    stuck_msg = gen.seen[2][-1].content
+    assert "SAME labels failed last turn" in stuck_msg
+
+
+def unwrap_body(sva: str) -> str:
+    from formalsynapse.sva_edit import unwrap_formal
+
+    return unwrap_formal(sva)
+
+
 def test_drop_duplicates_keeps_proven_copy() -> None:
     from formalsynapse.sva_edit import drop_duplicates
 

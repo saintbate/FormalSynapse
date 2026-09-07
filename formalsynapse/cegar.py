@@ -65,6 +65,9 @@ class Attempt:
     attempted_mutants: int = 0
     unkilled: tuple[MutantHunk, ...] = ()
     cover: VerifyResult | None = None
+    # True when ``sva`` is the model's block minus its failed labels, graded after every sampled
+    # candidate failed. Still model-authored text and still an sby verdict, but not a first-pass.
+    from_survivors: bool = False
 
     @property
     def kill_rate(self) -> float:
@@ -149,7 +152,8 @@ class Trajectory:
 
     @property
     def first_pass(self) -> bool:
-        return bool(self.attempts) and self.attempts[0].proven
+        """Zero-shot block proven as written (a survivors-only pass at turn 1 does not count)."""
+        return bool(self.attempts) and self.attempts[0].proven and not self.attempts[0].from_survivors
 
     @property
     def healed(self) -> bool:
@@ -157,7 +161,8 @@ class Trajectory:
 
     @property
     def turns(self) -> int:
-        return len(self.attempts)
+        """Sampled turns (a survivors fallback is graded in the same turn, not a turn of its own)."""
+        return sum(1 for a in self.attempts if not a.from_survivors)
 
     @property
     def kill_rate(self) -> float | None:
@@ -553,39 +558,70 @@ def run_block(
             if result.ok and not result.skipped:
                 break
         assert best is not None
-        if best.result.ok and _has_covers(best.result):
-            # Vacuity check: every assert's antecedent must be reachable within the bound.
-            cover = verify(
-                dut_path,
-                best.sva,
-                top,
-                mode="cover",
-                depth=depth,
-                timeout_s=timeout_s,
-                workdir=workdir,
-                run_name=f"cegar-{top}-{turn}-cover",
-                extra_files=extra_files,
-                strict=True,
-            )
-            best = replace(best, cover=cover)
-        if best.proven and min_kill > 0.0:
-            kill = score_kill(
-                dut_path,
-                best.sva,
-                top,
-                workdir,
-                max_mutants=max_mutants,
-                mutants=mutants,
-                extra_files=extra_files,
-                depth=depth,
-                timeout_s=timeout_s,
-                clock=ctx.clock or "clk",
-                mutant_root=workdir / f"cegar-{top}-{turn}-kill",
-            )
-            best = _apply_kill(best, kill, golden_rtl=clean_rtl)
+
+        def _grade_pass(att: Attempt, tag: str) -> Attempt:
+            """Cover (vacuity) and, when required, mutation kill for an sby PASS."""
+            if att.result.ok and _has_covers(att.result):
+                cover = verify(
+                    dut_path,
+                    att.sva,
+                    top,
+                    mode="cover",
+                    depth=depth,
+                    timeout_s=timeout_s,
+                    workdir=workdir,
+                    run_name=f"cegar-{top}-{tag}-cover",
+                    extra_files=extra_files,
+                    strict=True,
+                )
+                att = replace(att, cover=cover)
+            if att.proven and min_kill > 0.0:
+                kill = score_kill(
+                    dut_path,
+                    att.sva,
+                    top,
+                    workdir,
+                    max_mutants=max_mutants,
+                    mutants=mutants,
+                    extra_files=extra_files,
+                    depth=depth,
+                    timeout_s=timeout_s,
+                    clock=ctx.clock or "clk",
+                    mutant_root=workdir / f"cegar-{top}-{tag}-kill",
+                )
+                att = _apply_kill(att, kill, golden_rtl=clean_rtl)
+            return att
+
+        best = _grade_pass(best, str(turn))
         attempts.append(best)
         if on_attempt is not None:
             on_attempt(best)
+        failed = best.result.failed_assertions
+        sampled = [a for a in attempts if not a.from_survivors]  # one per turn
+        repeated = len(sampled) >= 2 and bool(failed) and set(failed) == set(sampled[-2].result.failed_assertions)
+        if not best.result.ok and failed and (repeated or turn == max_turns):
+            # Every candidate FAILed and the loop is stuck (same labels twice) or out of turns.
+            # The survivors (block minus its failed labels) are what the loop would have graded
+            # had the model answered the slot repair with nothing, so grade them: an sby PASS
+            # here is a fallback winner with its own kill score, not a first-pass.
+            survivors = strip_labels(best.sva, failed)
+            if has_assert(survivors):
+                result = verify(
+                    dut_path,
+                    survivors,
+                    top,
+                    depth=depth,
+                    timeout_s=timeout_s,
+                    workdir=workdir,
+                    run_name=f"cegar-{top}-{turn}-survivors",
+                    extra_files=extra_files,
+                    strict=True,
+                )
+                if result.ok:
+                    surv = _grade_pass(Attempt(turn, survivors, result, from_survivors=True), f"{turn}-survivors")
+                    attempts.append(surv)
+                    if on_attempt is not None:
+                        on_attempt(surv)
         if turn == max_turns:
             break
         if best.result.ok:
@@ -628,9 +664,12 @@ def run_block(
                 repair = skipped_section(best.skipped) + "\n" + repair
             messages.append(Message("user", repair))
             continue
-        failed = best.result.failed_assertions
         kept = strip_labels(best.sva, failed) if failed else ""
-        repeated = len(attempts) >= 2 and set(failed) == set(attempts[-2].result.failed_assertions)
+        skipped_labels = _skipped_labels(best)
+        if kept and skipped_labels:
+            kept = strip_labels(kept, skipped_labels)
+        if kept and any("truncated" in s for s in best.skipped):
+            kept = strip_truncated(kept)
         messages.append(Message("assistant", best.sva))
         if failed and unwrap_formal(kept):
             repair = slot_repair_user(
@@ -639,6 +678,7 @@ def run_block(
                 status=best.result.status,
                 report=best.result.report,
                 failed_assertions=failed,
+                repeated=repeated,
             )
         else:
             repair = refinement_user(
@@ -648,6 +688,8 @@ def run_block(
                 failed_assertions=failed,
                 repeated=repeated,
             )
+        if best.skipped:
+            repair = skipped_section(best.skipped) + "\n" + repair
         messages.append(Message("user", repair))
     return Trajectory(
         block=dut_path.parent.name,

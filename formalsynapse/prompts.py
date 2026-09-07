@@ -280,6 +280,7 @@ def slot_repair_user(
     status: str,
     report: str,
     failed_assertions: tuple[str, ...],
+    repeated: bool = False,
 ) -> str:
     """Ask only for replacements of the failed labels; survivors stay in Python."""
     labels = ", ".join(failed_assertions) if failed_assertions else "(see diagnostic)"
@@ -288,7 +289,17 @@ def slot_repair_user(
     )
     prev = clip_prompt_text(previous_sva, SVA_CHAR_BUDGET, label="failed SVA")
     diag = clip_prompt_text(report, REPORT_CHAR_BUDGET, label="diagnostic")
+    repeat = (
+        f"The SAME labels failed last turn too ({labels}). Your rewrite did not change the "
+        "behaviour the counterexample shows. Read the waveform table: the consequent you wrote is "
+        "false at the marked cycle on the GOLDEN design, so the requirement is not what you think. "
+        "Either check the value the table shows the design actually produces, or leave this "
+        "requirement out and emit only properties you can justify from the RTL.\n\n"
+        if repeated
+        else ""
+    )
     return (
+        f"{repeat}"
         f"The harness already deleted the failed labels. Do not repeat the kept properties.\n"
         f"FAILED LABELS to replace with *different* properties: {labels}\n"
         f"Harness status: {status}\n\n"
