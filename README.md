@@ -90,6 +90,11 @@ fsyn trace work/<run>/<task>/engine_0/trace.vcd --top sync_fifo
   without a reset port gets a prompt that forbids `disable iff` instead of one that invents `rst_n`.
 - **Kills need a proof first.** `fsyn gate` scores mutation only after prove and cover PASS; an SVA
   that fails on the golden RTL fails on every mutant, and that is not a kill rate.
+- **The bound is deep enough to fire every check.** A check gated to cycle >= N never runs in an
+  N-step BMC, and sby would still say PASS. The harness compares every lowered check's guard depth
+  with `--depth` and reports ERROR naming the labels that could never have been checked.
+- **Parameter overrides are part of the result.** `--param` changes what was proven; the summary,
+  report and JSON say which values the result holds for.
 
 ## Repository layout
 
@@ -181,7 +186,19 @@ jobs:
           dut: rtl/foo.sv
           sva: formal/foo.sva.sv
           top: foo
+          # optional: elaborate with parameters that make the behaviour fit the bound
+          # params: "BAUD_DIV=4"
+          # min-kill: "0.5"
 ```
+
+Most real RTL ships with parameters (baud dividers, refresh counters, timeouts) that put the
+interesting behaviour thousands of cycles out, where no affordable BMC bound can see it and every
+mutant survives. `params` (CLI: `--param NAME=VALUE`, yosys `chparam`) elaborates the DUT with
+different values for prove, cover and every mutant. The report, the JSON and the step summary all
+carry the values, because a proof at `BIT_RATE=25000000` says nothing about 9600 baud. Suites
+(`--suite golden|assertllm2`) refuse `--param` so their numbers stay comparable across runs.
+`examples/uart_tx/uart_tx.sva.sv` shows the pattern: 0/8 kills at shipped parameters, 7/8 with
+frame-timing properties under `BIT_RATE=25000000 PAYLOAD_BITS=2`.
 
 ## Quality gates
 

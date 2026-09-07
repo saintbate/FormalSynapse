@@ -288,13 +288,42 @@ Re-gate with the fixed grader (BMC 20, 8 mutants, `--min-kill 0.25`):
 | set | result |
 |---|---|
 | golden hand-written SVA, 10 blocks | 10/10 prove+cover PASS; kill 100% on 7, `rr_arbiter` 8/8, `onehot_fsm` 1/2, `spi_master` 2/6 |
-| `examples/uart_tx` (ben-marshall/uart) | prove+cover PASS, kill 0/8 (frame-timing mutants are ~5k cycles out at 9600 baud; CI gates prove+cover only) |
+| `examples/uart_tx` (ben-marshall/uart), shipped parameters | prove+cover PASS, kill 0/8 (frame-timing mutants are ~5k cycles out at 9600 baud) |
+| `examples/uart_tx`, `--param BIT_RATE=25000000 PAYLOAD_BITS=2`, depth 30 | prove+cover PASS, kill 7/8 (88%); the survivor flips the data-latch condition, which port-only SVA cannot see. This is the CI configuration (`min-kill 0.5`). |
 | saved CodeV-14B golden candidates, 8 of 10 | 2/8 pass the bar (`counter` 8/8, `edge_detector` 1/1); `onehot_fsm` proves but kills 0/2; 5 ERROR on prose/undefined-macro output |
 | saved AssertLLM2 candidates, 4 | `versatile_counter` PASS 3/8 (38%) unchanged; `uart` and `present_cipher` now ERROR (invented `rst_n`, item 5); `programmable_interval_timer` FAIL (`a_counter_reset` @ step 2, genuine) |
 
 The old `present_cipher` "PASS 1/7" row above is therefore withdrawn. The 14B
 candidate files were saved before extraction was fixed and contain the model's
 reasoning; the gate's extractor recovers the block when there is one.
+
+### Parameter overrides (the uart follow-up)
+
+The uart's 0/8 was the normal case, not an odd one: real RTL ships with
+dividers and timeouts that put its behaviour thousands of cycles past any
+affordable bound, so a kill rate at shipped parameters is 0 for reasons that
+have nothing to do with the SVA. `verify`/`gate` take `--param NAME=VALUE`
+(action input `params`), rendered as `chparam -set NAME VALUE <top>` before
+`prep`; the same values apply to prove, cover and every mutant, and are
+recorded in `VerifyResult.params`, the report text, `gate.json` and the step
+summary. Suites refuse `--param` so golden/AssertLLM2 numbers stay comparable.
+Names and values are validated (identifier; integer, sized literal, real or
+quoted string) because they are written into a script sby executes.
+
+Writing the frame properties surfaced two more things:
+
+7. **A bound shallower than a guard was a silent PASS.** Every lowered check is
+   gated on `f_fsyn_cycles >= guard`, and BMC at depth D visits steps 0..D-1, so
+   a check with guard >= D never fires and sby reports PASS. `verify` now
+   compares each check's guard depth with `--depth` and returns ERROR naming the
+   labels ("BMC depth 10 is too shallow: a_uart_tx_frame_done (needs depth >
+   14)"). Test: `test_bound_too_shallow_is_error_not_pass`.
+8. A real property of the uart: `bit_counter` is sized by
+   `COUNT_REG_LEN = 1+$clog2(CYCLES_PER_BIT)`, so at `CYCLES_PER_BIT < 8` an
+   8-bit payload can never reach `payload_done` and `uart_tx_busy` never falls.
+   The frame-completion assert found it at `BIT_RATE=25000000`; hence
+   `PAYLOAD_BITS=2` in the CI configuration. The frame is also 12..14 clocks
+   rather than a fixed length because `cycle_counter` is not cleared in IDLE.
 
 ### Weeks 7–9
 
