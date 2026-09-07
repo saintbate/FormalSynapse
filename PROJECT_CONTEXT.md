@@ -438,8 +438,36 @@ fixed and covered by unit tests:
   One trivial-assert run at depth 3 precedes any LLM call; a failing DUT is a
   turn-0 `DUT smoke failed` ERROR with zero GPU spent.
 
-Results of the final pass are in `regen-20260907b/` (see the table below;
-filled in when the run finished).
+- **Stuck slots.** On AssertLLM2 the same label failed four turns straight
+  (`ft816float a_idle_after_reset`, `gaussian_noise_generator
+  a_ctg_data_forwarding`): the model rewrites the slot with the same false
+  consequent. When failed labels repeat, or on the last turn, the block minus
+  those labels is graded as a fallback attempt (`from_survivors`, same turn,
+  never a first-pass, its own cover + kill score), and the slot-repair message
+  escalates ("read the waveform or leave the requirement out").
+
+Golden, final pass (`--min-kill 0.5`, exit 0, 10/10 complete proofs; before
+the fixes the same model gave 8/8 on one block and nothing on the rest):
+
+| block | turns | first-pass | kill |
+|---|---|---|---|
+| counter | 1 | yes | 8/8 |
+| edge_detector | 1 | yes | 2/2 |
+| gray_counter | 1 | yes | 4/4 |
+| onehot_fsm | 1 | yes | 5/5 |
+| priority_arbiter | 2 | no | 7/7 |
+| rr_arbiter | 1 | yes | 4/8 |
+| shift_register | 1 | yes | 3/3 |
+| skid_buffer | 1 | yes | 7/8 |
+| spi_master | 2 | yes | 8/8 |
+| sync_fifo | 1 | yes | 8/8 |
+
+`spi_master` proved first-pass at 3/8 and the kill-miss repair (unkilled hunks
+in the prompt) took it to 8/8 in one more turn. All ten SFT rows survive
+`build_sft.py --min-kill 0.5` (mean weight 0.94, every assistant turn
+comment-canonicalised). The AssertLLM2 pass (69 designs, shipped mutants) is
+recorded in `regen-20260907b/assertllm2-generate.log`; its summary goes here
+when it finishes.
 
 ### Weeks 7–9
 
