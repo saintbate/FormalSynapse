@@ -418,6 +418,30 @@ def test_dut_smoke_failure_makes_no_llm_calls(tmp_path: Path, monkeypatch: pytes
     assert traj.winner is not None and not traj.ok
 
 
+def test_fit_context_compacts_history_then_shrinks_rtl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from formalsynapse.cegar import _estimate_tokens, _fit_context
+    from formalsynapse.prompts import zero_shot_user
+
+    monkeypatch.setenv("FSYN_LLM_CONTEXT", "8192")
+    rtl = "module big(input clk);\n" + "".join(f"  reg [7:0] r{i}; // reg {i}\n" for i in range(600)) + "endmodule\n"
+    spec = "1. something\n" * 50
+    user0 = zero_shot_user(module="big", spec=spec, rtl=rtl, context="")
+    rambling = GOOD.replace("`endif", "// " + "reasoning " * 2500 + "\n`endif")
+    repair = "The previous assertion block did not formally verify.\n" + "x" * 1500
+    msgs = [Message("system", "sys"), Message("user", user0), Message("assistant", rambling), Message("user", repair)]
+    assert _estimate_tokens(msgs) > 8192 - 2048
+    fitted = _fit_context(msgs, max_tokens=2048, module="big", spec=spec, rtl=rtl, context="")
+    assert _estimate_tokens(fitted) <= 8192 - 2048 - 384
+    assert fitted[-1].content == repair, "the repair message is never cut"
+    assistant = [m for m in fitted if m.role == "assistant"]
+    assert all("reasoning" not in m.content and "p_t_good" in m.content for m in assistant)
+    # With a small context the history pair goes and the RTL shrinks, but the repair survives.
+    monkeypatch.setenv("FSYN_LLM_CONTEXT", "3000")
+    tiny = _fit_context(msgs, max_tokens=1024, module="big", spec=spec, rtl=rtl, context="")
+    assert [m.role for m in tiny] == ["system", "user", "user"]
+    assert tiny[-1].content == repair and "truncated for the 8k context" in tiny[1].content
+
+
 def test_drop_duplicates_keeps_proven_copy() -> None:
     from formalsynapse.sva_edit import drop_duplicates
 

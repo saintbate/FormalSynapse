@@ -12,6 +12,7 @@ SPEC_CHAR_BUDGET = 4000
 RTL_CHAR_BUDGET = 3500
 SVA_CHAR_BUDGET = 2000
 REPORT_CHAR_BUDGET = 1500
+CONTEXT_CHAR_BUDGET = 2500  # design_context render: port/reg list of a big AssertLLM2 design
 
 _KEEP_HEAD = re.compile(
     r"(?im)^#{1,3}\s+(interface|requirements?|function|clock|reset|constraints?)\b"
@@ -103,10 +104,20 @@ def clip_prompt_text(text: str, max_chars: int, *, label: str = "text") -> str:
     return packed + f"\n\n[{label} truncated for the 8k context window]\n"
 
 
-def zero_shot_user(*, module: str, spec: str, rtl: str, context: str = "") -> str:
-    """User message for the first (zero-shot) attempt."""
-    spec = clip_prompt_text(spec, SPEC_CHAR_BUDGET, label="specification")
-    clean = clip_prompt_text(strip_formal_blocks(rtl).rstrip() + "\n", RTL_CHAR_BUDGET, label="DUT")
+def zero_shot_user(
+    *,
+    module: str,
+    spec: str,
+    rtl: str,
+    context: str = "",
+    rtl_budget: int = RTL_CHAR_BUDGET,
+    spec_budget: int = SPEC_CHAR_BUDGET,
+    context_budget: int = CONTEXT_CHAR_BUDGET,
+) -> str:
+    """User message for the first (zero-shot) attempt. Budgets are in characters."""
+    spec = clip_prompt_text(spec, spec_budget, label="specification")
+    clean = clip_prompt_text(strip_formal_blocks(rtl).rstrip() + "\n", rtl_budget, label="DUT")
+    context = clip_prompt_text(context, context_budget, label="design context")
     ctx = f"## Design context (only these names exist)\n{context.strip()}\n\n" if context.strip() else ""
     return (
         f"Write SystemVerilog Assertions for module `{module}` that capture every numbered "

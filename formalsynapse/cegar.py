@@ -7,6 +7,7 @@ below ``min_kill`` is incomplete: mutation kill keeps the loop open.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -19,6 +20,11 @@ from formalsynapse.gate import KillReport, score_kill
 from formalsynapse.generator import GenerateError, Generator, Message, generate_sva_n
 from formalsynapse.mutate import Mutant, MutantHunk, rtl_hunk
 from formalsynapse.prompts import (
+    CONTEXT_CHAR_BUDGET,
+    RTL_CHAR_BUDGET,
+    SPEC_CHAR_BUDGET,
+    SVA_CHAR_BUDGET,
+    clip_prompt_text,
     cover_only_user,
     extract_fail_user,
     kill_miss_user,
@@ -38,8 +44,10 @@ from formalsynapse.sva_edit import (
     strip_labels,
     strip_truncated,
     unwrap_formal,
+    wrap_formal,
 )
 from formalsynapse.sva_inject import strip_formal_blocks
+from formalsynapse.sva_lower import strip_comments
 from formalsynapse.verify_harness import VerifyResult, verify
 
 MAX_FEEDBACK = 3
@@ -339,6 +347,75 @@ def _trim_history(messages: list[Message], *, keep_pairs: int = HISTORY_PAIRS) -
     return head + (tail[-keep:] if keep else [])
 
 
+# Measured on the gaussian_noise_generator repair prompt that vLLM rejected: 18.5k chars were
+# 7681 Qwen tokens, i.e. ~2.4 chars/token for RTL + SVA + diff hunks. Prose is ~4.
+CHARS_PER_TOKEN = 2.5
+CONTEXT_MARGIN_TOKENS = 384  # chat template, role tags, tokenizer variance
+
+
+def _context_tokens() -> int:
+    raw = os.environ.get("FSYN_LLM_CONTEXT", "").strip()
+    try:
+        return int(raw) if raw else 8192
+    except ValueError:
+        return 8192
+
+
+def _estimate_tokens(messages: Sequence[Message]) -> int:
+    return int(sum(len(m.content) for m in messages) / CHARS_PER_TOKEN)
+
+
+def _compact_assistant(sva: str) -> str:
+    """The assistant turn in history is context, not the deliverable: drop the model's comments
+    (often kilobytes of leaked reasoning) and clip, so the RTL and the repair keep their room."""
+    body = strip_comments(unwrap_formal(sva))
+    body = re.sub(r"[ \t]+\n", "\n", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return wrap_formal(clip_prompt_text(body, SVA_CHAR_BUDGET, label="previous SVA"))
+
+
+def _fit_context(
+    messages: list[Message],
+    *,
+    max_tokens: int,
+    module: str,
+    spec: str,
+    rtl: str,
+    context: str,
+) -> list[Message]:
+    """Shrink the prompt until it fits ``context - max_tokens``; never let the server reject it.
+
+    Order: compact assistant turns -> drop the history pair -> shrink the RTL/spec/context in the
+    zero-shot message. The repair message (kept block + diagnostic) is the last thing touched
+    because it is what the model must act on.
+    """
+    budget = _context_tokens() - max_tokens - CONTEXT_MARGIN_TOKENS
+    msgs = [Message("assistant", _compact_assistant(m.content)) if m.role == "assistant" else m for m in messages]
+    if _estimate_tokens(msgs) <= budget:
+        return msgs
+    msgs = _trim_history(msgs, keep_pairs=0) + msgs[-1:] if len(msgs) > 2 else msgs
+    if _estimate_tokens(msgs) <= budget:
+        return msgs
+    scale = 1.0
+    while scale > 0.15:
+        scale *= 0.7
+        msgs[1] = Message(
+            "user",
+            zero_shot_user(
+                module=module,
+                spec=spec,
+                rtl=rtl,
+                context=context,
+                rtl_budget=int(RTL_CHAR_BUDGET * scale),
+                spec_budget=int(SPEC_CHAR_BUDGET * scale),
+                context_budget=int(CONTEXT_CHAR_BUDGET * scale),
+            ),
+        )
+        if _estimate_tokens(msgs) <= budget:
+            break
+    return msgs
+
+
 def run_block(
     *,
     dut_path: Path,
@@ -413,9 +490,17 @@ def run_block(
                 elapsed_s=time.monotonic() - started,
                 system=messages[0].content,
             )
+    max_tokens = int(getattr(generator, "max_tokens", 1024))
     for turn in range(1, max_turns + 1):
         sample_temp = 0.5 if n_cand > 1 else None
-        messages = _trim_history(messages)
+        messages = _fit_context(
+            _trim_history(messages),
+            max_tokens=max_tokens,
+            module=top,
+            spec=spec,
+            rtl=clean_rtl,
+            context=context,
+        )
         try:
             with _with_temperature(generator, sample_temp):
                 raw_blocks = generate_sva_n(generator, messages, n_cand)
@@ -567,7 +652,8 @@ def run_block(
     return Trajectory(
         block=dut_path.parent.name,
         top=top,
-        prompt=user0,
+        # The zero-shot prompt as the model actually saw it (may have been shrunk to fit context).
+        prompt=messages[1].content if len(messages) > 1 and messages[1].role == "user" else user0,
         attempts=tuple(attempts),
         elapsed_s=time.monotonic() - started,
         system=messages[0].content if messages and messages[0].role == "system" else "",

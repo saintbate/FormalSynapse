@@ -12,7 +12,8 @@ from formalsynapse.sva_lower import blank_comments
 _IFDEF = re.compile(r"^\s*`ifdef\s+FORMAL\b", re.I | re.M)
 _SYSTASK = re.compile(r"\$[A-Za-z_]\w*")
 _ENDIF = re.compile(r"^\s*`endif\b", re.I | re.M)
-_PROP = re.compile(r"\bproperty\s+(?P<name>[A-Za-z_]\w*)\b", re.I)
+# Declaration form only (``property p_x;`` / ``property p_x(...)``): not ``assert property (p_x)``.
+_PROP = re.compile(r"\bproperty\s+(?P<name>[A-Za-z_]\w*)\s*(?=[;(])", re.I)
 _ENDPROP = re.compile(r"\bendproperty\b", re.I)
 _LABELED = re.compile(
     r"(?P<label>[A-Za-z_]\w*)\s*:\s*(?P<kind>assert|assume|cover)\s+property\b",
@@ -150,10 +151,13 @@ def strip_labels(sva: str, labels: tuple[str, ...]) -> str:
     text = unwrap_formal(sva)
     if not text:
         return ""
-    drop_ranges = _labeled_ranges(text, wanted)
+    # Scan comment-blanked text (same offsets) and cut the original: a comment such as
+    # "// Property for requirement 1" must not be mistaken for a declaration named "for".
+    drop_ranges = _labeled_ranges(blank_comments(text, strings=True), wanted)
     kept = _cut(text, drop_ranges)
-    refs = {m.group(1).lower() for m in _PROP_REF.finditer(kept)}
-    prop_ranges = _property_ranges(kept)
+    clean = blank_comments(kept, strings=True)
+    refs = {m.group(1).lower() for m in _PROP_REF.finditer(clean)}
+    prop_ranges = _property_ranges(clean)
     orphan = [(a, b) for name, a, b in prop_ranges if name.lower() not in refs]
     kept = _cut(kept, orphan).strip()
     return wrap_formal(kept)
